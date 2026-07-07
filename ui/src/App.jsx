@@ -109,6 +109,7 @@ function formatApiMessage(message) {
     followUpQuestions: metadata.follow_up_questions ?? [],
     elapsedMs: metadata.elapsed_ms ?? null,
     status: message.role === 'assistant' ? 'final_response' : undefined,
+    progressSteps: [],
   }
 }
 
@@ -383,6 +384,18 @@ function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry
   const stageLabel = {
     agent_ready: 'Agent is ready',
     thinking: 'Thinking',
+    checking_access: 'Checking',
+    guardrail_check: 'Checking',
+    creating_subquestions: 'Planning',
+    subquestions_ready: 'Planning',
+    bm25_search: 'Searching',
+    vector_search: 'Searching',
+    deduplicating_chunks: 'Merging',
+    reranking_chunks: 'Reranking',
+    generating_answer: 'Generating',
+    creating_followups: 'Follow-ups',
+    saving_conversation: 'Saving',
+    complete: 'Complete',
     writing: 'Writing',
     final_response: 'Final response',
     error: 'Needs attention',
@@ -403,9 +416,16 @@ function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry
           {message.time ? <time>{message.time}</time> : null}
         </div>
         {!isUser && message.heading && !message.pending ? <h2 className="response-heading">{message.heading}</h2> : null}
-        <StructuredContent text={message.content}>
-          <CitationList items={citations} openSource={openSource} onToggle={toggleSource} />
-        </StructuredContent>
+        {!isUser && message.progressSteps?.length && message.pending ? <AgentRunTimeline steps={message.progressSteps} activeStatus={message.status} /> : null}
+        {message.content ? (
+          <StructuredContent text={message.content}>
+            <CitationList items={citations} openSource={openSource} onToggle={toggleSource} />
+          </StructuredContent>
+        ) : !isUser && message.pending ? (
+          <div className="answer-placeholder" aria-hidden="true">
+            Waiting for response stream...
+          </div>
+        ) : null}
         {activeCitation ? (
           <SourceChunk
             source={activeCitation.source}
@@ -454,6 +474,23 @@ function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry
         ) : null}
       </div>
     </article>
+  )
+}
+
+function AgentRunTimeline({ steps }) {
+  const visibleSteps = steps.slice(-8)
+  return (
+    <div className="agent-run" aria-label="Agent progress">
+      {visibleSteps.map((step, index) => {
+        const isLast = index === visibleSteps.length - 1
+        return (
+          <div className={`agent-run__step ${isLast ? 'is-active' : 'is-complete'}`} key={`${step.stage}-${index}`}>
+            <span className="agent-run__dot" />
+            <span>{step.message}</span>
+          </div>
+        )
+      })}
+    </div>
   )
 }
 
@@ -614,6 +651,36 @@ export function App() {
     )
   }
 
+  function appendProgressStep(messageId, step) {
+    setMessages((current) =>
+      current.map((message) => {
+        if (message.id !== messageId) return message
+        const existingSteps = message.progressSteps ?? []
+        const previous = existingSteps[existingSteps.length - 1]
+        const nextStep = {
+          stage: step.stage || 'thinking',
+          message: step.message || 'Working',
+          metadata: step.metadata ?? {},
+        }
+        if (previous?.stage === nextStep.stage && previous?.message === nextStep.message) {
+          return {
+            ...message,
+            elapsedMs: step.elapsedMs ?? message.elapsedMs,
+            status: nextStep.stage,
+            pending: true,
+          }
+        }
+        return {
+          ...message,
+          progressSteps: [...existingSteps, nextStep],
+          elapsedMs: step.elapsedMs ?? message.elapsedMs,
+          status: nextStep.stage,
+          pending: true,
+        }
+      }),
+    )
+  }
+
   function requestPayload(question) {
     return {
       question,
@@ -643,6 +710,7 @@ export function App() {
       elapsedMs,
       status: 'final_response',
       pending: false,
+      progressSteps: [],
     })
     return data
   }
@@ -669,10 +737,15 @@ export function App() {
       const { event, data } = parseSseBlock(block)
       if (event === 'status') {
         updateMessage(assistantId, {
-          content: data.stage === 'writing' ? '' : data.message || 'Thinking',
           heading: '',
           status: data.stage || 'thinking',
           pending: true,
+          elapsedMs: performance.now() - startedAt,
+        })
+      }
+      if (event === 'progress') {
+        appendProgressStep(assistantId, {
+          ...data,
           elapsedMs: performance.now() - startedAt,
         })
       }
@@ -697,6 +770,7 @@ export function App() {
           status: 'final_response',
           pending: false,
           streamingStarted: false,
+          progressSteps: [],
         })
       }
       if (event === 'error') {
@@ -710,6 +784,7 @@ export function App() {
           elapsedMs: data.elapsed_ms ?? performance.now() - startedAt,
           status: 'done',
           pending: false,
+          progressSteps: [],
         })
       }
     }
@@ -744,7 +819,7 @@ export function App() {
       {
         id: assistantId,
         role: 'assistant',
-        content: 'Agent is ready',
+        content: '',
         heading: '',
         time,
         sources: [],
@@ -752,6 +827,7 @@ export function App() {
         elapsedMs: 0,
         status: 'agent_ready',
         pending: true,
+        progressSteps: [{ stage: 'agent_ready', message: 'Agent is ready', metadata: {} }],
       },
     ])
     setInput('')
@@ -776,6 +852,7 @@ export function App() {
             elapsedMs: performance.now() - startedAt,
             status: 'done',
             pending: false,
+            progressSteps: [],
           })
           return null
         }
@@ -791,6 +868,7 @@ export function App() {
           elapsedMs: performance.now() - startedAt,
           status: 'done',
           pending: false,
+          progressSteps: [],
         })
         return null
       }

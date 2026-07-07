@@ -7,7 +7,7 @@ import re
 from collections import Counter
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from app.rag.answer import RagAnswer, answer_question_structured
 from app.rag.retriever import lancedb_retrieve
@@ -17,6 +17,7 @@ from app.utils.files import output_dir
 
 UNABLE_TO_GENERATE_MESSAGE = "I am unable to generate the response at the moment. Please contact Admin."
 logger = logging.getLogger(__name__)
+ProgressCallback = Callable[[str, str, dict[str, Any] | None], None]
 
 GENERATED_SIMILAR_QUERY_COUNT = 3
 CANDIDATE_CHUNKS_PER_QUERY = 10
@@ -364,9 +365,12 @@ def answer_with_main_pipeline(
     top_k: int = 4,
     doc_id: str | None = None,
     source_type: str | None = None,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
+    emit_progress(progress, "embedding_query", "Embedding the question for vector search")
     search_k = top_k if not (doc_id or source_type) else max(top_k * 8, 24)
     results = lancedb_retrieve(question, top_k=search_k)
+    emit_progress(progress, "retrieving_chunks", "Retrieving candidate chunks", {"candidates": len(results)})
     if source_type:
         results = [result for result in results if (result.get("source_type") or "document") == source_type]
     if doc_id:
@@ -375,6 +379,8 @@ def answer_with_main_pipeline(
     if not results:
         raise RuntimeError("No LanceDB results matched the selected source scope.")
 
+    emit_progress(progress, "reranking_chunks", "Selecting the best evidence", {"chunks": len(results)})
+    emit_progress(progress, "generating_answer", "Generating the answer from selected evidence", {"chunks": len(results)})
     structured_answer = answer_question_structured(question, results)
     if not structured_answer_is_usable(structured_answer):
         return unavailable_response(mode="insufficient_evidence", confidence=structured_answer.confidence)
@@ -387,10 +393,13 @@ def answer_with_fallback(
     doc_id: str | None = None,
     source_type: str | None = None,
     error: Exception | None = None,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
+    emit_progress(progress, "retrieving_chunks", "Retrieving keyword candidates")
     sources = retrieve_chunks(question=question, top_k=top_k, doc_id=doc_id, source_type=source_type)
     if sources:
         try:
+            emit_progress(progress, "generating_answer", "Generating the answer from keyword evidence", {"chunks": len(sources)})
             structured_answer = answer_question_structured(question, sources)
             return {
                 "heading": structured_answer.heading,
@@ -415,14 +424,16 @@ def answer_question(
     top_k: int = 4,
     doc_id: str | None = None,
     source_type: str | None = None,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     try:
         if llm_provider() == "databricks":
-            return answer_with_databricks_pipeline(question=question, top_k=top_k, doc_id=doc_id, source_type=source_type)
-        return answer_with_main_pipeline(question=question, top_k=top_k, doc_id=doc_id, source_type=source_type)
+            return answer_with_databricks_pipeline(question=question, top_k=top_k, doc_id=doc_id, source_type=source_type, progress=progress)
+        return answer_with_main_pipeline(question=question, top_k=top_k, doc_id=doc_id, source_type=source_type, progress=progress)
     except Exception as exc:
         logger.exception("Answer pipeline failed: %s", exc)
-        return answer_with_fallback(question=question, top_k=top_k, doc_id=doc_id, source_type=source_type, error=exc)
+        emit_progress(progress, "fallback_search", "Primary retrieval failed; using keyword search")
+        return answer_with_fallback(question=question, top_k=top_k, doc_id=doc_id, source_type=source_type, error=exc, progress=progress)
 
 
 def answer_with_databricks_pipeline(
@@ -430,15 +441,19 @@ def answer_with_databricks_pipeline(
     top_k: int = 4,
     doc_id: str | None = None,
     source_type: str | None = None,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
+    emit_progress(progress, "creating_subquestions", "Creating focused retrieval questions")
     sources = retrieve_hybrid_databricks_sources(
         question=question,
         top_k=RERANKED_CHUNKS_FOR_LLM,
         doc_id=doc_id,
         source_type=source_type,
+        progress=progress,
     )
     if not sources:
         raise RuntimeError("No Databricks similarity results matched the selected source scope.")
+    emit_progress(progress, "generating_answer", "Generating the answer from selected evidence", {"chunks": len(sources)})
     structured_answer = answer_question_structured(question, sources)
     if not structured_answer_is_usable(structured_answer):
         return unavailable_response(mode="insufficient_evidence", confidence=structured_answer.confidence)
@@ -459,12 +474,25 @@ def retrieve_hybrid_databricks_sources(
     top_k: int = 4,
     doc_id: str | None = None,
     source_type: str | None = None,
+    progress: ProgressCallback | None = None,
 ) -> list[dict[str, Any]]:
     sub_questions = generate_similar_questions(question)
+    emit_progress(
+        progress,
+        "subquestions_ready",
+        "Prepared retrieval questions",
+        {"questions": sub_questions[: GENERATED_SIMILAR_QUERY_COUNT + 1]},
+    )
     ranked: dict[str, tuple[float, dict[str, Any]]] = {}
 
     for query_index, sub_question in enumerate(sub_questions):
         query_weight = 1.0 if query_index == 0 else 0.85
+        emit_progress(
+            progress,
+            "bm25_search",
+            f"Running BM25 search for question {query_index + 1}",
+            {"query_index": query_index + 1, "total": len(sub_questions), "question": sub_question},
+        )
 
         for rank, source in enumerate(
             retrieve_bm25_chunks(
@@ -484,6 +512,12 @@ def retrieve_hybrid_databricks_sources(
             )
 
         try:
+            emit_progress(
+                progress,
+                "vector_search",
+                f"Running vector search for question {query_index + 1}",
+                {"query_index": query_index + 1, "total": len(sub_questions), "question": sub_question},
+            )
             vector_results = lancedb_retrieve(sub_question, top_k=CANDIDATE_CHUNKS_PER_QUERY)
         except Exception as exc:
             logger.exception("Databricks vector retrieval failed; using BM25 retrieval only: %s", exc)
@@ -508,8 +542,16 @@ def retrieve_hybrid_databricks_sources(
                 sub_question=sub_question,
             )
 
+    emit_progress(progress, "deduplicating_chunks", "Merging duplicate chunks", {"candidates": len(ranked)})
     reranked = rerank_sources(question=question, ranked=ranked)
+    emit_progress(progress, "reranking_chunks", "Reranking evidence for the final prompt", {"chunks": min(len(reranked), top_k)})
     return reranked[:top_k]
+
+
+def emit_progress(progress: ProgressCallback | None, stage: str, message: str, metadata: dict[str, Any] | None = None) -> None:
+    if progress is None:
+        return
+    progress(stage, message, metadata or {})
 
 
 def add_ranked_source(

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import queue
 import subprocess
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -144,13 +146,72 @@ def safe_follow_up_questions(question: str, answer: str, sources: list[dict[str,
         return []
 
 
-def answer_deltas(answer: str, chunk_size: int = 18):
+def answer_deltas(answer: str, chunk_size: int = 8):
     words = answer.split(" ")
     for start in range(0, len(words), chunk_size):
         piece = " ".join(words[start : start + chunk_size])
         if start + chunk_size < len(words):
             piece += " "
         yield piece
+
+
+def run_answer_pipeline_with_progress(
+    question: str,
+    top_k: int,
+    doc_id: str | None,
+    source_type: str | None,
+    request_id: str,
+):
+    progress_events: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
+    result: dict[str, Any] = {}
+
+    def progress(stage: str, message: str, metadata: dict[str, Any] | None = None) -> None:
+        progress_events.put(
+            (
+                "progress",
+                {
+                    "stage": stage,
+                    "message": message,
+                    "metadata": metadata or {},
+                    "request_id": request_id,
+                },
+            )
+        )
+
+    def target() -> None:
+        try:
+            result["response"] = answer_question(
+                question=question,
+                top_k=top_k,
+                doc_id=doc_id,
+                source_type=source_type,
+                progress=progress,
+            )
+        except Exception as exc:
+            result["error"] = exc
+        finally:
+            progress_events.put(("pipeline_done", {"request_id": request_id}))
+
+    worker = threading.Thread(target=target, name=f"answer-pipeline-{request_id}", daemon=True)
+    worker.start()
+
+    while True:
+        try:
+            event, data = progress_events.get(timeout=0.25)
+        except queue.Empty:
+            if worker.is_alive():
+                yield "heartbeat", {"request_id": request_id}
+                continue
+            break
+
+        if event == "pipeline_done":
+            break
+        yield event, data
+
+    worker.join()
+    if result.get("error"):
+        raise result["error"]
+    yield "pipeline_result", result["response"]
 
 
 @app.on_event("startup")
@@ -437,6 +498,7 @@ def chat_stream(chat_request: ChatRequest, request: Request, user: UserContext =
         request_id = request.state.request_id
         yield sse_event("status", {"stage": "agent_ready", "message": "Agent is ready", "request_id": request_id})
         try:
+            yield sse_event("progress", {"stage": "checking_access", "message": "Checking access and quota", "metadata": {}, "request_id": request_id})
             require_role(user, {"admin", "analyst"})
             enforce_rate_limit(f"{user.tenant_id}:{user.user_id}:chat")
             try:
@@ -461,7 +523,7 @@ def chat_stream(chat_request: ChatRequest, request: Request, user: UserContext =
             title = question[:70]
             effective_top_k = chat_request.top_k or retrieval_top_k()
 
-            yield sse_event("status", {"stage": "thinking", "message": "Thinking", "request_id": request_id})
+            yield sse_event("progress", {"stage": "guardrail_check", "message": "Checking question safety", "metadata": {}, "request_id": request_id})
             security = classify_query(question)
             log_audit_event(
                 "query_security_check",
@@ -507,21 +569,34 @@ def chat_stream(chat_request: ChatRequest, request: Request, user: UserContext =
                 yield sse_event("final", response.model_dump())
                 return
 
-            rag_response = answer_question(
+            source_type = None if chat_request.source_type in (None, "", "all") else chat_request.source_type
+            rag_response = None
+            for event, data in run_answer_pipeline_with_progress(
                 question=question,
                 top_k=effective_top_k,
                 doc_id=selected_doc_id,
-                source_type=None if chat_request.source_type in (None, "", "all") else chat_request.source_type,
-            )
+                source_type=source_type,
+                request_id=request_id,
+            ):
+                if event == "pipeline_result":
+                    rag_response = data
+                    continue
+                yield sse_event(event, data)
+            if rag_response is None:
+                raise RuntimeError("Answer pipeline finished without a response.")
+
             answer = rag_response["answer"]
             sources = rag_response["sources"]
             heading = rag_response.get("heading", "")
             yield sse_event("status", {"stage": "writing", "message": "", "request_id": request_id})
             for delta in answer_deltas(answer):
                 yield sse_event("answer_delta", {"delta": delta, "request_id": request_id})
+                time.sleep(0.025)
+            yield sse_event("progress", {"stage": "creating_followups", "message": "Creating follow-up questions", "metadata": {}, "request_id": request_id})
             follow_up_questions = safe_follow_up_questions(question=question, answer=answer, sources=sources)
             elapsed_ms = elapsed_ms_since(started_at)
 
+            yield sse_event("progress", {"stage": "saving_conversation", "message": "Saving conversation", "metadata": {}, "request_id": request_id})
             assistant_message_id = persist_chat_turn(
                 session_id=session_id,
                 title=title,
@@ -549,6 +624,7 @@ def chat_stream(chat_request: ChatRequest, request: Request, user: UserContext =
                 request_id=request_id,
                 metadata={"session_id": session_id, "message_id": assistant_message_id, "mode": rag_response.get("mode")},
             )
+            yield sse_event("progress", {"stage": "complete", "message": "Response ready", "metadata": {}, "request_id": request_id})
             response = ChatResponse(
                 session_id=session_id,
                 message_id=assistant_message_id,
