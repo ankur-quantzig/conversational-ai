@@ -21,7 +21,9 @@ def enforce_question_quota(user: UserContext) -> dict[str, int | None]:
 def question_limit_for(user: UserContext) -> int | None:
     if user.is_power_user:
         return None
-    return basic_user_question_limit()
+    if "basic_user" in user.roles:
+        return basic_user_question_limit()
+    return None
 
 
 def questions_used(user: UserContext) -> int:
