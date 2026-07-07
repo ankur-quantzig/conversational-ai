@@ -31,5 +31,3 @@ env:
     value: sqlite:///output/chat_history.sqlite3
   - name: GUARDRAIL_CONFIDENCE_THRESHOLD
     value: "0.9"
-  - name: DATABRICKS_TOKEN
-    value: "<set-in-databricks-app-secrets>"

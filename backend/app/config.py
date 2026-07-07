@@ -116,12 +116,15 @@ def databricks_host() -> str:
 
 def databricks_token() -> str:
     load_dotenv_file()
-    return (
-        env_value("DATABRICKS_TOKEN")
-        or env_value("DATABRICKS_APP_TOKEN")
-        or env_value("DATABRICKS_OAUTH_TOKEN")
-        or ""
-    )
+    for value in (
+        env_value("DATABRICKS_TOKEN"),
+        env_value("DATABRICKS_APP_TOKEN"),
+        env_value("DATABRICKS_OAUTH_TOKEN"),
+    ):
+        cleaned = (value or "").strip()
+        if cleaned and not cleaned.startswith("<"):
+            return cleaned
+    return ""
 
 
 def databricks_chat_endpoint() -> str:

@@ -54,7 +54,11 @@ def classify_query(question: str) -> QuerySecurityResult:
                 return deterministic
             llm_result = llm_query_check(question, model=model)
     except Exception as exc:
-        return QuerySecurityResult(is_attack=True, confidence_score=1.0, reason=f"Guardrail classifier failed: {type(exc).__name__}")
+        return QuerySecurityResult(
+            is_attack=False,
+            confidence_score=deterministic.confidence_score,
+            reason=f"{deterministic.reason}; guardrail classifier unavailable: {type(exc).__name__}",
+        )
 
     if llm_result.is_attack:
         return llm_result
