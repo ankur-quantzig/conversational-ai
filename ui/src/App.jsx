@@ -145,7 +145,8 @@ function protectedFailure(status) {
 }
 
 function safeAgentErrorMessage(error) {
-  return UNABLE_TO_GENERATE_MESSAGE
+  const requestId = error?.requestId ? ` Request ID: ${error.requestId}.` : ''
+  return `${error?.userMessage || error?.message || 'The API could not complete this request.'}${requestId}`
 }
 
 function sourceName(source = {}) {
@@ -775,17 +776,20 @@ export function App() {
       }
       if (event === 'error') {
         terminalEvent = true
+        const error = apiError(data.status_code || 500, data.message || 'The streaming request failed before the agent returned a final response.')
+        error.requestId = data.request_id
         updateMessage(assistantId, {
           heading: '',
-          content: data.message || UNABLE_TO_GENERATE_MESSAGE,
+          content: safeAgentErrorMessage(error),
           time,
           sources: [],
           citations: [],
           elapsedMs: data.elapsed_ms ?? performance.now() - startedAt,
-          status: 'done',
+          status: 'error',
           pending: false,
           progressSteps: [],
         })
+        throw error
       }
     }
 
@@ -842,31 +846,16 @@ export function App() {
         refreshSessions()
         return data
       } catch (jsonError) {
-        if (protectedFailure(jsonError.status || streamError.status)) {
-          updateMessage(assistantId, {
-            heading: '',
-            content: safeAgentErrorMessage(jsonError.status ? jsonError : streamError),
-            time,
-            sources: [],
-            citations: [],
-            elapsedMs: performance.now() - startedAt,
-            status: 'done',
-            pending: false,
-            progressSteps: [],
-          })
-          return null
-        }
-        const sources = []
-        const answer = composeAnswer(question, sources)
+        const error = jsonError.status ? jsonError : streamError
         setApiOnline(false)
         updateMessage(assistantId, {
-          heading: localHeading(question, sources),
-          content: answer,
+          heading: '',
+          content: safeAgentErrorMessage(error),
           time,
           sources: [],
           citations: [],
           elapsedMs: performance.now() - startedAt,
-          status: 'done',
+          status: 'error',
           pending: false,
           progressSteps: [],
         })
