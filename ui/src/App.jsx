@@ -778,6 +778,7 @@ export function App() {
         terminalEvent = true
         const error = apiError(data.status_code || 500, data.message || 'The streaming request failed before the agent returned a final response.')
         error.requestId = data.request_id
+        error.fromStreamEvent = true
         updateMessage(assistantId, {
           heading: '',
           content: safeAgentErrorMessage(error),
@@ -841,6 +842,9 @@ export function App() {
       const streamed = await submitChatStream(payload, assistantId, startedAt, time)
       if (streamed) refreshSessions()
     } catch (streamError) {
+      if (streamError.fromStreamEvent) {
+        return null
+      }
       try {
         const data = await submitChatJson(payload, assistantId, startedAt, time)
         refreshSessions()

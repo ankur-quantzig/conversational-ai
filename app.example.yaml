@@ -10,7 +10,7 @@ env:
   - name: RETRIEVAL_TOP_K
     value: "6"
   - name: RATE_LIMIT_PER_MINUTE
-    value: "30"
+    value: "120"
   - name: BASIC_USER_QUESTION_LIMIT
     value: "10"
   - name: POWER_USERS
