@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+app.yaml
 
 # OS/editor noise
 .DS_Store
