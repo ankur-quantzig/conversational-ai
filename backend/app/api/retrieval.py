@@ -4,9 +4,13 @@ import json
 import logging
 import math
 import re
+import time
 from collections import Counter
+from copy import deepcopy
 from functools import lru_cache
+from hashlib import sha256
 from pathlib import Path
+from threading import RLock
 from typing import Any, Callable
 
 from app.rag.answer import RagAnswer, answer_question_structured
@@ -22,6 +26,7 @@ ProgressCallback = Callable[[str, str, dict[str, Any] | None], None]
 GENERATED_SIMILAR_QUERY_COUNT = 3
 CANDIDATE_CHUNKS_PER_QUERY = 10
 RERANKED_CHUNKS_FOR_LLM = 6
+CACHE_TTL_SECONDS = 300
 TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9-]{2,}", re.IGNORECASE)
 STOP_TERMS = {
     "about",
@@ -72,6 +77,49 @@ QUERY_EXPANSIONS = {
     "transformer": ["attention", "self-attention", "encoder", "decoder", "multi-head"],
     "architecture": ["encoder", "decoder", "stack", "layer", "attention"],
 }
+
+
+class TtlCache:
+    def __init__(self, ttl_seconds: int = CACHE_TTL_SECONDS, maxsize: int = 128) -> None:
+        self.ttl_seconds = ttl_seconds
+        self.maxsize = maxsize
+        self._lock = RLock()
+        self._items: dict[str, tuple[float, Any]] = {}
+
+    def get(self, key: str) -> Any | None:
+        now = time.monotonic()
+        with self._lock:
+            item = self._items.get(key)
+            if item is None:
+                return None
+            expires_at, value = item
+            if expires_at <= now:
+                self._items.pop(key, None)
+                return None
+            return deepcopy(value)
+
+    def set(self, key: str, value: Any) -> None:
+        with self._lock:
+            if len(self._items) >= self.maxsize:
+                oldest_key = min(self._items, key=lambda item_key: self._items[item_key][0])
+                self._items.pop(oldest_key, None)
+            self._items[key] = (time.monotonic() + self.ttl_seconds, deepcopy(value))
+
+
+_answer_cache = TtlCache()
+
+
+def cached_answer_key(question: str, top_k: int, doc_id: str | None, source_type: str | None) -> str:
+    payload = {
+        "provider": llm_provider(),
+        "embedding_endpoint": databricks_embedding_endpoint(),
+        "question": question,
+        "top_k": top_k,
+        "doc_id": doc_id,
+        "source_type": source_type,
+    }
+    serialized = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return sha256(serialized.encode("utf-8")).hexdigest()
 
 
 def title_from_doc_id(doc_id: str) -> str:
@@ -426,14 +474,23 @@ def answer_question(
     source_type: str | None = None,
     progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
+    key = cached_answer_key(question=question, top_k=top_k, doc_id=doc_id, source_type=source_type)
+    cached = _answer_cache.get(key)
+    if cached is not None:
+        emit_progress(progress, "cache_hit", "Using cached answer", {"ttl_seconds": CACHE_TTL_SECONDS})
+        return cached
+
     try:
         if llm_provider() == "databricks":
-            return answer_with_databricks_pipeline(question=question, top_k=top_k, doc_id=doc_id, source_type=source_type, progress=progress)
-        return answer_with_main_pipeline(question=question, top_k=top_k, doc_id=doc_id, source_type=source_type, progress=progress)
+            response = answer_with_databricks_pipeline(question=question, top_k=top_k, doc_id=doc_id, source_type=source_type, progress=progress)
+        else:
+            response = answer_with_main_pipeline(question=question, top_k=top_k, doc_id=doc_id, source_type=source_type, progress=progress)
     except Exception as exc:
         logger.exception("Answer pipeline failed: %s", exc)
         emit_progress(progress, "fallback_search", "Primary retrieval failed; using keyword search")
-        return answer_with_fallback(question=question, top_k=top_k, doc_id=doc_id, source_type=source_type, error=exc, progress=progress)
+        response = answer_with_fallback(question=question, top_k=top_k, doc_id=doc_id, source_type=source_type, error=exc, progress=progress)
+    _answer_cache.set(key, response)
+    return response
 
 
 def answer_with_databricks_pipeline(

@@ -33,7 +33,7 @@ from app.config import (
 )
 from app.clients.lancedb_store import DEFAULT_TABLE_NAME, open_table
 from app.db.postgres import get_connection, init_db, wait_for_database
-from app.rag.answer import generate_follow_up_questions
+from app.rag.answer import generate_follow_up_questions, generate_response_diagram, plan_conversation_question
 from app.security.audit import log_audit_event
 from app.security.auth import UserContext, current_user, ensure_document_access, require_role
 from app.security.guardrails import QuerySecurityResult, classify_query
@@ -66,6 +66,8 @@ class ChatResponse(BaseModel):
     citations: list[dict[str, Any]] = Field(default_factory=list)
     missing_information: str = ""
     follow_up_questions: list[str] = Field(default_factory=list)
+    diagram: dict[str, Any] = Field(default_factory=dict)
+    question_analysis: dict[str, Any] = Field(default_factory=dict)
     security: dict[str, Any] = Field(default_factory=dict)
     elapsed_ms: int | None = None
 
@@ -144,6 +146,50 @@ def safe_follow_up_questions(question: str, answer: str, sources: list[dict[str,
         return generate_follow_up_questions(question=question, answer=answer, results=sources)
     except Exception:
         return []
+
+
+def safe_response_diagram(question: str, answer: str, sources: list[dict[str, Any]]) -> dict[str, Any]:
+    try:
+        diagram = generate_response_diagram(question=question, answer=answer, results=sources)
+        payload = diagram.model_dump()
+        return payload if payload.get("should_show") else {}
+    except Exception:
+        return {}
+
+
+def conversation_history(session_id: str | None, user: UserContext, limit: int = 8) -> list[dict[str, Any]]:
+    if not session_id:
+        return []
+    ensure_session_access(session_id, user)
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            select role, content
+            from chat_messages
+            where session_id = %s
+            order by created_at desc
+            limit %s
+            """,
+            (session_id, limit),
+        ).fetchall()
+    return list(reversed(rows))
+
+
+def analyze_question_for_turn(question: str, history: list[dict[str, Any]]) -> tuple[str, dict[str, Any]]:
+    try:
+        plan = plan_conversation_question(question=question, history=history)
+        payload = plan.model_dump()
+        payload["original_question"] = question
+        payload["effective_question"] = plan.standalone_question
+        return plan.standalone_question, payload
+    except Exception as exc:
+        return question, {
+            "is_follow_up": False,
+            "standalone_question": question,
+            "original_question": question,
+            "effective_question": question,
+            "reason": f"Question classifier unavailable: {type(exc).__name__}",
+        }
 
 
 def answer_deltas(answer: str, chunk_size: int = 8):
@@ -433,8 +479,10 @@ def chat(chat_request: ChatRequest, request: Request, user: UserContext = Depend
             elapsed_ms=elapsed_ms,
         )
 
+    history = conversation_history(chat_request.session_id, user)
+    effective_question, question_analysis = analyze_question_for_turn(question, history)
     rag_response = answer_question(
-        question=question,
+        question=effective_question,
         top_k=effective_top_k,
         doc_id=selected_doc_id,
         source_type=None if chat_request.source_type in (None, "", "all") else chat_request.source_type,
@@ -442,7 +490,8 @@ def chat(chat_request: ChatRequest, request: Request, user: UserContext = Depend
     answer = rag_response["answer"]
     sources = rag_response["sources"]
     heading = rag_response.get("heading", "")
-    follow_up_questions = safe_follow_up_questions(question=question, answer=answer, sources=sources)
+    follow_up_questions = safe_follow_up_questions(question=effective_question, answer=answer, sources=sources)
+    diagram = safe_response_diagram(question=effective_question, answer=answer, sources=sources)
     elapsed_ms = elapsed_ms_since(started_at)
 
     assistant_message_id = persist_chat_turn(
@@ -459,6 +508,8 @@ def chat(chat_request: ChatRequest, request: Request, user: UserContext = Depend
             "confidence_score": rag_response.get("confidence_score"),
             "citations": rag_response.get("citations", []),
             "follow_up_questions": follow_up_questions,
+            "diagram": diagram,
+            "question_analysis": question_analysis,
             "heading": heading,
             "missing_information": rag_response.get("missing_information", ""),
             "security": {**security.model_dump(), "quota": quota},
@@ -486,6 +537,8 @@ def chat(chat_request: ChatRequest, request: Request, user: UserContext = Depend
         citations=rag_response.get("citations", []),
         missing_information=rag_response.get("missing_information", ""),
         follow_up_questions=follow_up_questions,
+        diagram=diagram,
+        question_analysis=question_analysis,
         security={**security.model_dump(), "quota": quota},
         elapsed_ms=elapsed_ms,
     )
@@ -569,10 +622,26 @@ def chat_stream(chat_request: ChatRequest, request: Request, user: UserContext =
                 yield sse_event("final", response.model_dump())
                 return
 
+            yield sse_event("progress", {"stage": "question_analysis", "message": "Checking conversation context", "metadata": {}, "request_id": request_id})
+            history = conversation_history(chat_request.session_id, user)
+            effective_question, question_analysis = analyze_question_for_turn(question, history)
+            yield sse_event(
+                "progress",
+                {
+                    "stage": "question_ready",
+                    "message": "Prepared retrieval question",
+                    "metadata": {
+                        "is_follow_up": question_analysis.get("is_follow_up"),
+                        "effective_question": effective_question,
+                    },
+                    "request_id": request_id,
+                },
+            )
+
             source_type = None if chat_request.source_type in (None, "", "all") else chat_request.source_type
             rag_response = None
             for event, data in run_answer_pipeline_with_progress(
-                question=question,
+                question=effective_question,
                 top_k=effective_top_k,
                 doc_id=selected_doc_id,
                 source_type=source_type,
@@ -593,7 +662,9 @@ def chat_stream(chat_request: ChatRequest, request: Request, user: UserContext =
                 yield sse_event("answer_delta", {"delta": delta, "request_id": request_id})
                 time.sleep(0.025)
             yield sse_event("progress", {"stage": "creating_followups", "message": "Creating follow-up questions", "metadata": {}, "request_id": request_id})
-            follow_up_questions = safe_follow_up_questions(question=question, answer=answer, sources=sources)
+            follow_up_questions = safe_follow_up_questions(question=effective_question, answer=answer, sources=sources)
+            yield sse_event("progress", {"stage": "diagram_check", "message": "Checking if a diagram helps", "metadata": {}, "request_id": request_id})
+            diagram = safe_response_diagram(question=effective_question, answer=answer, sources=sources)
             elapsed_ms = elapsed_ms_since(started_at)
 
             yield sse_event("progress", {"stage": "saving_conversation", "message": "Saving conversation", "metadata": {}, "request_id": request_id})
@@ -611,6 +682,8 @@ def chat_stream(chat_request: ChatRequest, request: Request, user: UserContext =
                     "confidence_score": rag_response.get("confidence_score"),
                     "citations": rag_response.get("citations", []),
                     "follow_up_questions": follow_up_questions,
+                    "diagram": diagram,
+                    "question_analysis": question_analysis,
                     "heading": heading,
                     "missing_information": rag_response.get("missing_information", ""),
                     "security": {**security.model_dump(), "quota": quota},
@@ -638,6 +711,8 @@ def chat_stream(chat_request: ChatRequest, request: Request, user: UserContext =
                 citations=rag_response.get("citations", []),
                 missing_information=rag_response.get("missing_information", ""),
                 follow_up_questions=follow_up_questions,
+                diagram=diagram,
+                question_analysis=question_analysis,
                 security={**security.model_dump(), "quota": quota},
                 elapsed_ms=elapsed_ms,
             )

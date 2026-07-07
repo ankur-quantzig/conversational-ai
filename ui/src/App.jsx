@@ -107,6 +107,8 @@ function formatApiMessage(message) {
     sources: metadata.sources ?? [],
     citations: metadata.citations ?? [],
     followUpQuestions: metadata.follow_up_questions ?? [],
+    diagram: metadata.diagram ?? null,
+    questionAnalysis: metadata.question_analysis ?? null,
     elapsedMs: metadata.elapsed_ms ?? null,
     status: message.role === 'assistant' ? 'final_response' : undefined,
     progressSteps: [],
@@ -375,6 +377,70 @@ function StructuredContent({ text, children }) {
   )
 }
 
+function parseMermaidFlow(code = '') {
+  const nodes = new Map()
+  const edges = []
+  const nodePattern = /^([A-Za-z0-9_]+)(?:\[[^\]]*"]?([^"\]]+)["]?\]|\(([^)]+)\)|\{([^}]+)\})?$/
+
+  function cleanLabel(value, fallback) {
+    return String(value || fallback || 'Step')
+      .replace(/^["']|["']$/g, '')
+      .replace(/<br\s*\/?>/gi, ' ')
+      .trim()
+  }
+
+  function readNode(raw) {
+    const normalized = String(raw || '').trim().replace(/;$/, '')
+    const match = normalized.match(nodePattern)
+    if (!match) return { id: normalized, label: cleanLabel(normalized, normalized) }
+    const [, id, bracketLabel, roundLabel, braceLabel] = match
+    return { id, label: cleanLabel(bracketLabel || roundLabel || braceLabel, id) }
+  }
+
+  String(code)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('%%') && !line.toLowerCase().startsWith('flowchart') && !line.toLowerCase().startsWith('graph'))
+    .forEach((line) => {
+      const parts = line.split(/-->|---|==>/)
+      if (parts.length < 2) return
+      const from = readNode(parts[0])
+      const to = readNode(parts[1])
+      nodes.set(from.id, from.label)
+      nodes.set(to.id, to.label)
+      edges.push({ from: from.id, to: to.id })
+    })
+
+  return { nodes, edges }
+}
+
+function ResponseDiagram({ diagram }) {
+  const { nodes, edges } = parseMermaidFlow(diagram.code)
+  if (!nodes.size || !edges.length) {
+    return (
+      <section className="response-diagram">
+        {diagram.title ? <h3>{diagram.title}</h3> : null}
+        <pre>{diagram.code}</pre>
+      </section>
+    )
+  }
+
+  return (
+    <section className="response-diagram" aria-label={diagram.title || 'Response diagram'}>
+      {diagram.title ? <h3>{diagram.title}</h3> : null}
+      <div className="diagram-flow">
+        {edges.map((edge, index) => (
+          <React.Fragment key={`${edge.from}-${edge.to}-${index}`}>
+            {index === 0 ? <div className="diagram-node">{nodes.get(edge.from) || edge.from}</div> : null}
+            <div className="diagram-arrow" aria-hidden="true">↓</div>
+            <div className="diagram-node">{nodes.get(edge.to) || edge.to}</div>
+          </React.Fragment>
+        ))}
+      </div>
+    </section>
+  )
+}
+
 function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry, isSending }) {
   const isUser = message.role === 'user'
   const Icon = isUser ? CircleUserRound : BotMessageSquare
@@ -387,14 +453,18 @@ function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry
     thinking: 'Thinking',
     checking_access: 'Checking',
     guardrail_check: 'Checking',
+    question_analysis: 'Context',
+    question_ready: 'Context',
     creating_subquestions: 'Planning',
     subquestions_ready: 'Planning',
     bm25_search: 'Searching',
     vector_search: 'Searching',
+    cache_hit: 'Cached',
     deduplicating_chunks: 'Merging',
     reranking_chunks: 'Reranking',
     generating_answer: 'Generating',
     creating_followups: 'Follow-ups',
+    diagram_check: 'Diagram',
     saving_conversation: 'Saving',
     complete: 'Complete',
     writing: 'Writing',
@@ -427,6 +497,7 @@ function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry
             Waiting for response stream...
           </div>
         ) : null}
+        {!isUser && message.diagram?.should_show ? <ResponseDiagram diagram={message.diagram} /> : null}
         {activeCitation ? (
           <SourceChunk
             source={activeCitation.source}
@@ -708,6 +779,8 @@ export function App() {
       sources: data.sources ?? [],
       citations: data.citations ?? [],
       followUpQuestions: data.follow_up_questions ?? [],
+      diagram: data.diagram ?? null,
+      questionAnalysis: data.question_analysis ?? null,
       elapsedMs,
       status: 'final_response',
       pending: false,
@@ -767,6 +840,8 @@ export function App() {
           sources: data.sources ?? [],
           citations: data.citations ?? [],
           followUpQuestions: data.follow_up_questions ?? [],
+          diagram: data.diagram ?? null,
+          questionAnalysis: data.question_analysis ?? null,
           elapsedMs,
           status: 'final_response',
           pending: false,
@@ -829,6 +904,7 @@ export function App() {
         time,
         sources: [],
         citations: [],
+        diagram: null,
         elapsedMs: 0,
         status: 'agent_ready',
         pending: true,
