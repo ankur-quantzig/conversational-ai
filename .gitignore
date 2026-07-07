@@ -1,0 +1,47 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+
+# OS/editor noise
+.DS_Store
+.idea/
+.vscode/
+
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Node/Vite
+node_modules/
+dist/
+.vite/
+
+# Local app/runtime state
+.streamlit/
+*.log
+tmp_*.py
+
+# Large or generated data artifacts
+data/
+output/
+deploy/databricks/artifacts/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+postgres_data/
+
+# Local tool downloads
+tools/
+
+# Docker/local overrides
+docker-compose.override.yml

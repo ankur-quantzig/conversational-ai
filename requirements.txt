@@ -1,0 +1,13 @@
+azure-ai-documentintelligence==1.0.2
+azure-core==1.41.0
+fastapi==0.124.4
+lancedb==0.33.0
+openai==2.44.0
+pillow==12.0.0
+psycopg[binary]==3.3.2
+PyMuPDF==1.28.0
+pydantic==2.12.5
+python-dotenv==1.2.2
+pypdf==6.14.2
+streamlit==1.58.0
+uvicorn[standard]==0.38.0

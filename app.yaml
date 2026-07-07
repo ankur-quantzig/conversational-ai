@@ -1,0 +1,35 @@
+command:
+  - python
+  - deploy/databricks/start_databricks_app.py
+
+env:
+  - name: APP_ENV
+    value: databricks
+  - name: VITE_API_BASE_URL
+    value: ""
+  - name: RETRIEVAL_TOP_K
+    value: "6"
+  - name: RATE_LIMIT_PER_MINUTE
+    value: "30"
+  - name: BASIC_USER_QUESTION_LIMIT
+    value: "10"
+  - name: POWER_USERS
+    value: ankurkumarj@quantzig.com
+  - name: BASIC_USERS
+    value: surajc@quantzig.com,sidhus@quantzig.com,akshatameemamshi@quantzig.com,vikasgoyal@quantzig.com,saiprasad@quantzig.com
+  - name: LLM_PROVIDER
+    value: databricks
+  - name: DATABRICKS_HOST
+    value: https://dbc-4d180757-761e.cloud.databricks.com
+  - name: DATABRICKS_CHAT_ENDPOINT
+    value: databricks-claude-sonnet-4
+  - name: DATABRICKS_GUARDRAIL_ENDPOINT
+    value: databricks-claude-sonnet-4
+  - name: DATABRICKS_EMBEDDING_ENDPOINT
+    value: databricks-bge-large-en
+  - name: DATABASE_URL
+    value: sqlite:///output/chat_history.sqlite3
+  - name: GUARDRAIL_CONFIDENCE_THRESHOLD
+    value: "0.9"
+  - name: DATABRICKS_TOKEN
+    value: "<set-in-databricks-app-secrets>"
