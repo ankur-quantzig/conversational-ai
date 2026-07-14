@@ -46,3 +46,6 @@ tools/
 
 # Docker/local overrides
 docker-compose.override.yml
+
+# Local design docs
+ui/DESIGN_SPEC.md

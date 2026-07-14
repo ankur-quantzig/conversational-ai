@@ -92,6 +92,10 @@ class RetryRequest(BaseModel):
     top_k: int | None = Field(default=None, ge=1, le=10)
 
 
+class SessionUpdateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+
+
 class ShareResponse(BaseModel):
     share_id: str
     url: str
@@ -397,6 +401,23 @@ def create_session(user: UserContext = Depends(current_user)) -> dict[str, Any]:
             """,
             (session_id, "New chat", user.user_id, user.tenant_id),
         ).fetchone()
+    return row
+
+
+@app.patch("/sessions/{session_id}")
+def update_session(session_id: str, payload: SessionUpdateRequest, user: UserContext = Depends(current_user)) -> dict[str, Any]:
+    require_role(user, {"admin", "analyst"})
+    ensure_session_access(session_id, user)
+    title = payload.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Title cannot be empty")
+    with get_connection() as conn:
+        row = conn.execute(
+            "update chat_sessions set title = %s where id = %s returning id::text, title",
+            (title, session_id),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
     return row
 
 
