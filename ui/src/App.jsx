@@ -43,6 +43,8 @@ const starterExamples = [
 ]
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api'
+const MAX_QUESTION_LENGTH = 4000
+const MAX_TITLE_LENGTH = 200
 const UNABLE_TO_GENERATE_MESSAGE = 'I am unable to generate the response at the moment. Please contact Admin.'
 
 function parseChunks() {
@@ -357,6 +359,15 @@ function SourceChunk({ source, citation, index, onClose }) {
   )
 }
 
+function safeHref(url) {
+  try {
+    const parsed = new URL(String(url), window.location.origin)
+    return ['http:', 'https:', 'mailto:'].includes(parsed.protocol) ? parsed.href : null
+  } catch {
+    return null
+  }
+}
+
 function renderInline(text, keyPrefix = 'inline') {
   const pattern = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)\s]+\)|\*[^*\n]+\*)/g
   return String(text)
@@ -373,8 +384,10 @@ function renderInline(text, keyPrefix = 'inline') {
       if (part.startsWith('[')) {
         const link = part.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/)
         if (link) {
+          const href = safeHref(link[2])
+          if (!href) return <span key={key}>{link[1]}</span>
           return (
-            <a key={key} href={link[2]} target="_blank" rel="noopener noreferrer">
+            <a key={key} href={href} target="_blank" rel="noopener noreferrer">
               {link[1]}
             </a>
           )
@@ -1219,7 +1232,7 @@ export function App() {
   }
 
   async function submitQuestion(questionText = input) {
-    const question = questionText.trim()
+    const question = questionText.trim().slice(0, MAX_QUESTION_LENGTH)
     if (!question || isSending) return
 
     const time = new Intl.DateTimeFormat([], { hour: '2-digit', minute: '2-digit' }).format(new Date())
@@ -1373,6 +1386,7 @@ export function App() {
           key={session.id}
           className="history-rename"
           value={renameValue}
+          maxLength={MAX_TITLE_LENGTH}
           autoFocus
           onFocus={(event) => event.currentTarget.select()}
           onChange={(event) => setRenameValue(event.target.value)}
@@ -1448,6 +1462,7 @@ export function App() {
               <input
                 type="search"
                 value={historyQuery}
+                maxLength={120}
                 placeholder="Search chats"
                 aria-label="Search chats"
                 onChange={(event) => setHistoryQuery(event.target.value)}
@@ -1619,6 +1634,7 @@ export function App() {
                 }}
                 placeholder="Ask a question…"
                 rows={1}
+                maxLength={MAX_QUESTION_LENGTH}
               />
               <div className="composer__controls">
                 {isSending ? (
