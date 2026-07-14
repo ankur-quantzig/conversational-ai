@@ -8,14 +8,49 @@ from typing import Any
 from app.config import databricks_chat_endpoint, databricks_host, databricks_token
 
 
+def runtime_host_token() -> tuple[str, str]:
+    try:
+        import IPython
+
+        shell = IPython.get_ipython()
+        dbutils = shell.user_ns.get("dbutils") if shell else None
+        if dbutils:
+            context = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
+            host = ""
+            token = ""
+            try:
+                host = context.apiUrl().get()
+            except Exception:
+                try:
+                    host = f"https://{context.browserHostName().get()}"
+                except Exception:
+                    host = ""
+            try:
+                token = context.apiToken().get()
+            except Exception:
+                token = ""
+            return host.rstrip("/"), token
+    except Exception:
+        pass
+    return "", ""
+
+
+def serving_auth() -> tuple[str, str]:
+    host = databricks_host()
+    token = databricks_token()
+    if host and token:
+        return host, token
+    runtime_host, runtime_token = runtime_host_token()
+    return host or runtime_host, token or runtime_token
+
+
 def chat_completion(
     messages: list[dict[str, str]],
     endpoint: str | None = None,
     temperature: float = 0.0,
     max_tokens: int = 1200,
 ) -> str:
-    host = databricks_host()
-    token = databricks_token()
+    host, token = serving_auth()
     endpoint_name = endpoint or databricks_chat_endpoint()
     if not host:
         raise RuntimeError("DATABRICKS_HOST is required for Databricks model serving")
@@ -48,8 +83,7 @@ def chat_completion(
 
 
 def embeddings(texts: list[str], endpoint: str | None = None) -> list[list[float]]:
-    host = databricks_host()
-    token = databricks_token()
+    host, token = serving_auth()
     endpoint_name = endpoint or "databricks-bge-large-en"
     if not host:
         raise RuntimeError("DATABRICKS_HOST is required for Databricks model serving")

@@ -50,11 +50,11 @@ def to_lancedb_record(chunk: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def create_or_replace_index(chunks: list[dict[str, Any]], table_name: str = DEFAULT_TABLE_NAME):
+def create_or_replace_index(chunks: list[dict[str, Any]], table_name: str = DEFAULT_TABLE_NAME, db_dir: Path | None = None):
     records = [to_lancedb_record(chunk) for chunk in chunks if chunk.get("embedding")]
     if not records:
         raise ValueError("No embedded chunks found. Embed chunks before building the vector DB.")
-    db = connect()
+    db = connect(db_dir)
     if table_name in db.table_names():
         db.drop_table(table_name)
     return db.create_table(table_name, data=records)

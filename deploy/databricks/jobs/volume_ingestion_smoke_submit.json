@@ -1,0 +1,47 @@
+{
+  "run_name": "insight-copilot-volume-ingestion-smoke",
+  "tasks": [
+    {
+      "task_key": "smoke_volume_ingestion",
+      "description": "One-file real ingestion smoke test for chunking, Databricks embeddings, LanceDB rebuild, and manifest write.",
+      "spark_python_task": {
+        "python_file": "/Workspace/Shared/insight-copilot/engine/app/pipelines/databricks_volume_ingest.py",
+        "source": "WORKSPACE",
+        "parameters": [
+          "--input-volume",
+          "/Volumes/insight-copilot/bronze/shell-bronze-insight-copilot",
+          "--output-root",
+          "/Volumes/insight-copilot/bronze/shell-bronze-insight-copilot/_insight_copilot_output",
+          "--secret-scope",
+          "insight-copilot",
+          "--include",
+          "uploads/insight-copilot-pipeline-smoke-test.txt",
+          "--force",
+          "--max-files",
+          "1"
+        ]
+      },
+      "environment_key": "serverless_python",
+      "timeout_seconds": 1800
+    }
+  ],
+  "environments": [
+    {
+      "environment_key": "serverless_python",
+      "spec": {
+        "client": "2",
+        "dependencies": [
+          "azure-ai-documentintelligence==1.0.2",
+          "azure-core==1.41.0",
+          "lancedb==0.33.0",
+          "numpy==1.26.4",
+          "openai==2.44.0",
+          "pandas==2.2.2",
+          "pyarrow==16.1.0",
+          "pydantic==2.12.5",
+          "python-dotenv==1.2.2"
+        ]
+      }
+    }
+  ]
+}

@@ -10,7 +10,7 @@ env:
   - name: RETRIEVAL_TOP_K
     value: "6"
   - name: RATE_LIMIT_PER_MINUTE
-    value: "30"
+    value: "120"
   - name: BASIC_USER_QUESTION_LIMIT
     value: "10"
   - name: POWER_USERS
@@ -27,6 +27,10 @@ env:
     value: databricks-claude-sonnet-4
   - name: DATABRICKS_EMBEDDING_ENDPOINT
     value: databricks-bge-large-en
+  - name: DATABRICKS_DATA_VOLUME
+    value: /Volumes/insight-copilot/bronze/shell-bronze-insight-copilot
+  - name: DATABRICKS_OUTPUT_VOLUME
+    value: /Volumes/insight-copilot/bronze/shell-bronze-insight-copilot/_insight_copilot_output
   - name: OPENAI_GUARDRAIL_MODEL
     value: ""
   - name: DATABASE_URL

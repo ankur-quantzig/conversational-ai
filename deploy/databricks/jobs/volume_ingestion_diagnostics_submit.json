@@ -1,0 +1,37 @@
+{
+  "run_name": "insight-copilot-volume-ingestion-diagnostics",
+  "tasks": [
+    {
+      "task_key": "diagnose_volume_ingestion",
+      "description": "Checks Databricks Volume access, required binaries, and non-secret credential presence.",
+      "spark_python_task": {
+        "python_file": "/Workspace/Shared/insight-copilot/engine/app/pipelines/databricks_volume_ingest.py",
+        "source": "WORKSPACE",
+        "parameters": [
+          "--input-volume",
+          "/Volumes/insight-copilot/bronze/shell-bronze-insight-copilot",
+          "--output-root",
+          "/Volumes/insight-copilot/bronze/shell-bronze-insight-copilot/_insight_copilot_output",
+          "--secret-scope",
+          "insight-copilot",
+          "--diagnostics"
+        ]
+      },
+      "environment_key": "serverless_python",
+      "timeout_seconds": 1800
+    }
+  ],
+  "environments": [
+    {
+      "environment_key": "serverless_python",
+      "spec": {
+        "client": "2",
+        "dependencies": [
+          "imageio-ffmpeg==0.6.0",
+          "pydantic==2.12.5",
+          "python-dotenv==1.2.2"
+        ]
+      }
+    }
+  ]
+}
