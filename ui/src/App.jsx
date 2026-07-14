@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  ArrowDown,
   BotMessageSquare,
   BookOpen,
   ChevronLeft,
@@ -9,12 +10,21 @@ import {
   Copy,
   Download,
   Menu,
+  Moon,
+  MoreHorizontal,
+  Pencil,
+  Pin,
+  PinOff,
   RotateCcw,
+  Search,
   Send,
   Share2,
+  Square,
   SquarePen,
+  Sun,
   ThumbsDown,
   ThumbsUp,
+  Trash2,
   X,
 } from 'lucide-react'
 import logoUrl from './assets/shell-logo.png'
@@ -228,6 +238,29 @@ function VideoClipPlayer({ source }) {
   )
 }
 
+function sessionBucket(session) {
+  const raw = session.updated_at ?? session.created_at
+  const date = raw ? new Date(raw) : null
+  if (!date || Number.isNaN(date.getTime())) return 'Recents'
+  const now = new Date()
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  if (date >= startOfToday) return 'Today'
+  const startOfYesterday = new Date(startOfToday)
+  startOfYesterday.setDate(startOfYesterday.getDate() - 1)
+  if (date >= startOfYesterday) return 'Yesterday'
+  const weekAgo = new Date(startOfToday)
+  weekAgo.setDate(weekAgo.getDate() - 7)
+  if (date >= weekAgo) return 'Previous 7 days'
+  return 'Older'
+}
+
+function timeGreeting() {
+  const hour = new Date().getHours()
+  if (hour < 12) return 'Good morning'
+  if (hour < 17) return 'Good afternoon'
+  return 'Good evening'
+}
+
 function formatVideoTime(seconds) {
   const totalSeconds = Math.max(0, Math.floor(Number(seconds) || 0))
   const minutes = Math.floor(totalSeconds / 60)
@@ -324,14 +357,70 @@ function SourceChunk({ source, citation, index, onClose }) {
   )
 }
 
+function renderInline(text, keyPrefix = 'inline') {
+  const pattern = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)\s]+\)|\*[^*\n]+\*)/g
+  return String(text)
+    .split(pattern)
+    .map((part, index) => {
+      const key = `${keyPrefix}-${index}`
+      if (!part) return null
+      if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
+        return <strong key={key}>{part.slice(2, -2)}</strong>
+      }
+      if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
+        return <code key={key}>{part.slice(1, -1)}</code>
+      }
+      if (part.startsWith('[')) {
+        const link = part.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/)
+        if (link) {
+          return (
+            <a key={key} href={link[2]} target="_blank" rel="noopener noreferrer">
+              {link[1]}
+            </a>
+          )
+        }
+      }
+      if (part.startsWith('*') && part.endsWith('*') && part.length > 2) {
+        return <em key={key}>{part.slice(1, -1)}</em>
+      }
+      return part
+    })
+}
+
+function CodeBlock({ code, language }) {
+  const [copied, setCopied] = useState(false)
+
+  async function copyCode() {
+    await navigator.clipboard?.writeText(code)
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1400)
+  }
+
+  return (
+    <div className="code-block">
+      <div className="code-block__bar">
+        <span>{language || 'code'}</span>
+        <button type="button" aria-label="Copy code" onClick={copyCode}>
+          {copied ? <Check size={13} /> : <Copy size={13} />}
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+      <pre>
+        <code>{code}</code>
+      </pre>
+    </div>
+  )
+}
+
 function StructuredContent({ text, children }) {
   const blocks = []
   let bullets = []
+  let numbered = []
   let paragraph = []
 
   function flushParagraph(key) {
     if (!paragraph.length) return
-    blocks.push(<p key={key}>{paragraph.join(' ')}</p>)
+    blocks.push(<p key={key}>{renderInline(paragraph.join(' '), key)}</p>)
     paragraph = []
   }
 
@@ -340,34 +429,79 @@ function StructuredContent({ text, children }) {
     blocks.push(
       <ul key={key}>
         {bullets.map((bullet, index) => (
-          <li key={`${key}-${index}`}>{bullet}</li>
+          <li key={`${key}-${index}`}>{renderInline(bullet, `${key}-${index}`)}</li>
         ))}
       </ul>,
     )
     bullets = []
   }
 
-  String(text || '')
-    .split('\n')
-    .forEach((line, index) => {
-      const trimmed = line.trim()
-      if (!trimmed) {
-        flushParagraph(`p-${index}`)
-        flushBullets(`b-${index}`)
-        return
-      }
-      const bullet = trimmed.match(/^[-*]\s+(.+)$/) || trimmed.match(/^\d+\.\s+(.+)$/)
-      if (bullet) {
-        flushParagraph(`p-${index}`)
-        bullets.push(bullet[1])
-      } else {
-        flushBullets(`b-${index}`)
-        paragraph.push(trimmed)
-      }
-    })
+  function flushNumbered(key) {
+    if (!numbered.length) return
+    blocks.push(
+      <ol key={key}>
+        {numbered.map((item, index) => (
+          <li key={`${key}-${index}`}>{renderInline(item, `${key}-${index}`)}</li>
+        ))}
+      </ol>,
+    )
+    numbered = []
+  }
 
-  flushParagraph('p-last')
-  flushBullets('b-last')
+  function flushAll(key) {
+    flushParagraph(`p-${key}`)
+    flushBullets(`b-${key}`)
+    flushNumbered(`n-${key}`)
+  }
+
+  const lines = String(text || '').split('\n')
+  let index = 0
+  while (index < lines.length) {
+    const trimmed = lines[index].trim()
+    const fence = trimmed.match(/^```(\w+)?/)
+    if (fence) {
+      flushAll(index)
+      const codeLines = []
+      index += 1
+      while (index < lines.length && !lines[index].trim().startsWith('```')) {
+        codeLines.push(lines[index])
+        index += 1
+      }
+      blocks.push(<CodeBlock key={`code-${index}`} code={codeLines.join('\n')} language={fence[1]} />)
+      index += 1
+      continue
+    }
+    if (!trimmed) {
+      flushAll(index)
+      index += 1
+      continue
+    }
+    const heading = trimmed.match(/^(#{1,4})\s+(.+)$/)
+    if (heading) {
+      flushAll(index)
+      const Tag = heading[1].length <= 2 ? 'h3' : 'h4'
+      blocks.push(<Tag key={`h-${index}`}>{renderInline(heading[2], `h-${index}`)}</Tag>)
+      index += 1
+      continue
+    }
+    const bullet = trimmed.match(/^[-*]\s+(.+)$/)
+    const ordered = trimmed.match(/^\d+[.)]\s+(.+)$/)
+    if (bullet) {
+      flushParagraph(`p-${index}`)
+      flushNumbered(`n-${index}`)
+      bullets.push(bullet[1])
+    } else if (ordered) {
+      flushParagraph(`p-${index}`)
+      flushBullets(`b-${index}`)
+      numbered.push(ordered[1])
+    } else {
+      flushBullets(`b-${index}`)
+      flushNumbered(`n-${index}`)
+      paragraph.push(trimmed)
+    }
+    index += 1
+  }
+  flushAll('last')
 
   return (
     <div className="structured-content">
@@ -441,11 +575,12 @@ function ResponseDiagram({ diagram }) {
   )
 }
 
-function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry, isSending }) {
+function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry, onEdit, isSending }) {
   const isUser = message.role === 'user'
   const Icon = isUser ? CircleUserRound : BotMessageSquare
   const [openSource, setOpenSource] = useState(null)
   const [showSources, setShowSources] = useState(false)
+  const [justCopied, setJustCopied] = useState(false)
   const citations = !isUser ? buildDisplayCitations(message) : []
   const activeCitation = openSource === null ? null : citations[openSource]
   const stageLabel = {
@@ -493,8 +628,10 @@ function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry
             <CitationList items={citations} openSource={openSource} onToggle={toggleSource} />
           </StructuredContent>
         ) : !isUser && message.pending ? (
-          <div className="answer-placeholder" aria-hidden="true">
-            Waiting for response stream...
+          <div className="typing-indicator" role="status" aria-label="Agent is responding">
+            <span />
+            <span />
+            <span />
           </div>
         ) : null}
         {!isUser && message.diagram?.should_show ? <ResponseDiagram diagram={message.diagram} /> : null}
@@ -521,29 +658,73 @@ function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry
         ) : null}
         {!isUser ? (
           <div className="message-actions" aria-label="Message actions">
-            <button type="button" aria-label="Copy response" disabled={actionsDisabled} onClick={() => onCopy(message.content)}>
-              <Copy size={15} />
+            <button
+              type="button"
+              aria-label="Copy response"
+              title="Copy response"
+              disabled={actionsDisabled}
+              onClick={async () => {
+                await onCopy(message.content)
+                setJustCopied(true)
+                window.setTimeout(() => setJustCopied(false), 1400)
+              }}
+            >
+              {justCopied ? <Check size={15} /> : <Copy size={15} />}
             </button>
-            <button type="button" aria-label="Share response" disabled={actionsDisabled || !message.id} onClick={() => onShare(message)}>
+            <button type="button" aria-label="Share response" title="Share response" disabled={actionsDisabled || !message.id} onClick={() => onShare(message)}>
               <Share2 size={15} />
             </button>
-            <button type="button" aria-label="Download conversation" disabled={message.pending} onClick={() => onDownload()}>
+            <button type="button" aria-label="Download conversation" title="Download conversation" disabled={message.pending} onClick={() => onDownload()}>
               <Download size={15} />
             </button>
-            <button type="button" aria-label="Good response" disabled={actionsDisabled || !message.id} onClick={() => onFeedback(message, 'up')}>
+            <button
+              type="button"
+              className={message.feedback === 'up' ? 'is-selected' : ''}
+              aria-label="Good response"
+              aria-pressed={message.feedback === 'up'}
+              title="Good response"
+              disabled={actionsDisabled || !message.id}
+              onClick={() => onFeedback(message, 'up')}
+            >
               <ThumbsUp size={15} />
             </button>
-            <button type="button" aria-label="Bad response" disabled={actionsDisabled || !message.id} onClick={() => onFeedback(message, 'down')}>
+            <button
+              type="button"
+              className={message.feedback === 'down' ? 'is-selected' : ''}
+              aria-label="Bad response"
+              aria-pressed={message.feedback === 'down'}
+              title="Bad response"
+              disabled={actionsDisabled || !message.id}
+              onClick={() => onFeedback(message, 'down')}
+            >
               <ThumbsDown size={15} />
             </button>
-            <button type="button" aria-label="Try again" disabled={actionsDisabled || !message.id || isSending} onClick={() => onRetry(message)}>
+            <button type="button" aria-label="Try again" title="Try again" disabled={actionsDisabled || !message.id || isSending} onClick={() => onRetry(message)}>
               <RotateCcw size={15} />
             </button>
-            <button type="button" aria-label="Show sources" disabled={actionsDisabled || !citations.length} onClick={() => setShowSources((value) => !value)}>
+            <button type="button" aria-label="Show sources" title="Show sources" disabled={actionsDisabled || !citations.length} onClick={() => setShowSources((value) => !value)}>
               <BookOpen size={15} />
             </button>
           </div>
-        ) : null}
+        ) : (
+          <div className="message-actions message-actions--user" aria-label="Question actions">
+            <button type="button" aria-label="Edit question" title="Edit and resend" disabled={isSending} onClick={() => onEdit(message.content)}>
+              <Pencil size={14} />
+            </button>
+            <button
+              type="button"
+              aria-label="Copy question"
+              title="Copy question"
+              onClick={async () => {
+                await onCopy(message.content)
+                setJustCopied(true)
+                window.setTimeout(() => setJustCopied(false), 1400)
+              }}
+            >
+              {justCopied ? <Check size={14} /> : <Copy size={14} />}
+            </button>
+          </div>
+        )}
       </div>
     </article>
   )
@@ -638,13 +819,52 @@ export function App() {
   const [apiDocuments, setApiDocuments] = useState([])
   const [apiOnline, setApiOnline] = useState(false)
   const [isSending, setIsSending] = useState(false)
-  const [copied, setCopied] = useState(false)
+  const [toast, setToast] = useState({ text: '', visible: false })
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [atBottom, setAtBottom] = useState(true)
+  const [pinnedIds, setPinnedIds] = useState(() => {
+    try {
+      const stored = JSON.parse(window.localStorage.getItem('insight-copilot-pinned') ?? '[]')
+      return Array.isArray(stored) ? stored : []
+    } catch {
+      return []
+    }
+  })
+  const [menuSessionId, setMenuSessionId] = useState(null)
+  const [renamingSessionId, setRenamingSessionId] = useState(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [historyQuery, setHistoryQuery] = useState('')
+  const [theme, setTheme] = useState(() => {
+    const urlTheme = new URLSearchParams(window.location.search).get('theme')
+    if (urlTheme === 'dark' || urlTheme === 'light') return urlTheme
+    const stored = window.localStorage.getItem('insight-copilot-theme')
+    if (stored === 'dark' || stored === 'light') return stored
+    return window.matchMedia?.('(prefers-color-scheme: dark)')?.matches ? 'dark' : 'light'
+  })
   const inputRef = useRef(null)
+  const messagesRef = useRef(null)
+  const toastTimer = useRef(null)
+  const abortRef = useRef(null)
 
   const documents = apiDocuments.length ? apiDocuments : localDocuments
   const activeDocument = documents.find((doc) => doc.id === activeDoc)
+  const historyFilter = historyQuery.trim().toLowerCase()
+  const filteredSessions = historyFilter
+    ? sessions.filter((session) => String(session.title ?? '').toLowerCase().includes(historyFilter))
+    : sessions
+  const pinnedSessions = filteredSessions.filter((session) => pinnedIds.includes(session.id))
+  const recentSessions = filteredSessions.filter((session) => !pinnedIds.includes(session.id))
+  const sessionGroups = []
+  recentSessions.forEach((session) => {
+    const label = sessionBucket(session)
+    let group = sessionGroups.find((entry) => entry.label === label)
+    if (!group) {
+      group = { label, sessions: [] }
+      sessionGroups.push(group)
+    }
+    group.sessions.push(session)
+  })
   const latestFollowUps =
     [...messages]
       .reverse()
@@ -654,6 +874,72 @@ export function App() {
   useEffect(() => {
     refreshSessions()
   }, [])
+
+  useEffect(() => {
+    if (!atBottom) return
+    const el = messagesRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [messages, atBottom])
+
+  useEffect(() => {
+    const el = inputRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, 180)}px`
+  }, [input])
+
+  useEffect(() => {
+    function handleKeyDown(event) {
+      if (event.key === 'Escape') {
+        setSidebarOpen(false)
+        setMenuSessionId(null)
+        setRenamingSessionId(null)
+        return
+      }
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'o') {
+        event.preventDefault()
+        setSessionId(null)
+        setMessages([])
+        setSidebarOpen(false)
+        inputRef.current?.focus()
+        return
+      }
+      if (event.key === '/' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        const target = event.target
+        const tag = target?.tagName
+        if (tag !== 'INPUT' && tag !== 'TEXTAREA' && !target?.isContentEditable) {
+          event.preventDefault()
+          inputRef.current?.focus()
+        }
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [])
+
+  useEffect(() => {
+    window.localStorage.setItem('insight-copilot-pinned', JSON.stringify(pinnedIds))
+  }, [pinnedIds])
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    window.localStorage.setItem('insight-copilot-theme', theme)
+  }, [theme])
+
+  useEffect(() => {
+    if (!menuSessionId) return
+    function handleClick() {
+      setMenuSessionId(null)
+    }
+    window.addEventListener('click', handleClick)
+    return () => window.removeEventListener('click', handleClick)
+  }, [menuSessionId])
+
+  function showToast(text) {
+    setToast({ text, visible: true })
+    window.clearTimeout(toastTimer.current)
+    toastTimer.current = window.setTimeout(() => setToast((current) => ({ ...current, visible: false })), 1800)
+  }
 
   async function apiFetch(path, options) {
     const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -701,6 +987,50 @@ export function App() {
     setMessages([])
     setSidebarOpen(false)
     inputRef.current?.focus()
+  }
+
+  function togglePin(targetSessionId) {
+    setPinnedIds((current) =>
+      current.includes(targetSessionId) ? current.filter((id) => id !== targetSessionId) : [targetSessionId, ...current],
+    )
+    setMenuSessionId(null)
+  }
+
+  function startRenaming(session) {
+    setRenamingSessionId(session.id)
+    setRenameValue(session.title)
+    setMenuSessionId(null)
+  }
+
+  async function renameSession(targetSessionId) {
+    const title = renameValue.trim()
+    setRenamingSessionId(null)
+    const existing = sessions.find((session) => session.id === targetSessionId)
+    if (!title || !existing || title === existing.title) return
+    try {
+      await apiFetch(`/sessions/${targetSessionId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ title }),
+      })
+      setSessions((current) => current.map((session) => (session.id === targetSessionId ? { ...session, title } : session)))
+      showToast('Chat renamed')
+    } catch {
+      showToast('Could not rename chat')
+    }
+  }
+
+  async function deleteSession(targetSessionId) {
+    setMenuSessionId(null)
+    if (!window.confirm('Delete this chat? This cannot be undone.')) return
+    try {
+      await apiFetch(`/sessions/${targetSessionId}`, { method: 'DELETE' })
+      setSessions((current) => current.filter((session) => session.id !== targetSessionId))
+      setPinnedIds((current) => current.filter((id) => id !== targetSessionId))
+      if (targetSessionId === sessionId) startNewChat()
+      showToast('Chat deleted')
+    } catch {
+      showToast('Could not delete chat')
+    }
   }
 
   function updateMessage(messageId, patch) {
@@ -790,10 +1120,13 @@ export function App() {
   }
 
   async function submitChatStream(payload, assistantId, startedAt, time) {
+    const controller = new AbortController()
+    abortRef.current = controller
     const response = await fetch(`${API_BASE_URL}/chat/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+      signal: controller.signal,
     })
     if (!response.ok || !response.body) {
       throw apiError(response.status, `Streaming failed: ${response.status}`)
@@ -913,11 +1246,29 @@ export function App() {
     ])
     setInput('')
     setIsSending(true)
+    setAtBottom(true)
 
     try {
       const streamed = await submitChatStream(payload, assistantId, startedAt, time)
       if (streamed) refreshSessions()
     } catch (streamError) {
+      if (streamError.name === 'AbortError') {
+        setMessages((current) =>
+          current.map((message) =>
+            message.id === assistantId
+              ? {
+                  ...message,
+                  content: message.content || 'Response generation was stopped.',
+                  status: 'final_response',
+                  pending: false,
+                  streamingStarted: false,
+                  progressSteps: [],
+                }
+              : message,
+          ),
+        )
+        return null
+      }
       if (streamError.fromStreamEvent) {
         return null
       }
@@ -942,39 +1293,49 @@ export function App() {
         return null
       }
     } finally {
+      abortRef.current = null
       setIsSending(false)
     }
   }
 
   async function copyAnswer(text) {
     await navigator.clipboard?.writeText(text)
-    setCopied(true)
-    window.setTimeout(() => setCopied(false), 1400)
+    showToast('Copied to clipboard')
   }
 
   async function sendFeedback(message, rating) {
     if (!message.id) return
-    await apiFetch(`/messages/${message.id}/feedback`, {
-      method: 'POST',
-      body: JSON.stringify({ rating }),
-    })
-    setCopied(true)
-    window.setTimeout(() => setCopied(false), 1400)
+    try {
+      await apiFetch(`/messages/${message.id}/feedback`, {
+        method: 'POST',
+        body: JSON.stringify({ rating }),
+      })
+      updateMessage(message.id, { feedback: rating })
+      showToast('Feedback sent')
+    } catch {
+      showToast('Could not send feedback')
+    }
   }
 
   async function shareMessage(message) {
     if (!message.id) return
-    const data = await apiFetch(`/messages/${message.id}/share`, { method: 'POST' })
-    const shareUrl = `${window.location.origin}${data.url}`
-    await navigator.clipboard?.writeText(shareUrl)
-    setCopied(true)
-    window.setTimeout(() => setCopied(false), 1400)
+    try {
+      const data = await apiFetch(`/messages/${message.id}/share`, { method: 'POST' })
+      const shareUrl = `${window.location.origin}${data.url}`
+      await navigator.clipboard?.writeText(shareUrl)
+      showToast('Share link copied')
+    } catch {
+      showToast('Could not create share link')
+    }
   }
 
   async function downloadSession() {
     if (!sessionId) return
     const response = await fetch(`${API_BASE_URL}/sessions/${sessionId}/export.txt`)
-    if (!response.ok) return
+    if (!response.ok) {
+      showToast('Could not download transcript')
+      return
+    }
     const text = await response.text()
     const blob = new Blob([text], { type: 'text/plain' })
     const url = window.URL.createObjectURL(blob)
@@ -997,9 +1358,73 @@ export function App() {
       })
       setSessionId(data.session_id)
       await loadSession(data.session_id)
+    } catch {
+      showToast('Could not retry this message')
     } finally {
       setIsSending(false)
     }
+  }
+
+  function renderSessionRow(session) {
+    const isPinned = pinnedIds.includes(session.id)
+    if (renamingSessionId === session.id) {
+      return (
+        <input
+          key={session.id}
+          className="history-rename"
+          value={renameValue}
+          autoFocus
+          onFocus={(event) => event.currentTarget.select()}
+          onChange={(event) => setRenameValue(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              event.currentTarget.blur()
+            }
+          }}
+          onBlur={() => renameSession(session.id)}
+        />
+      )
+    }
+    return (
+      <div className={`history-row ${session.id === sessionId ? 'is-active' : ''}`} key={session.id}>
+        <button type="button" className="history-row__open" onClick={() => loadSession(session.id)}>
+          <span className="history-title">
+            {isPinned ? <Pin size={12} /> : null}
+            <span className="history-title__text">{session.title}</span>
+          </span>
+          <small>{session.message_count} messages</small>
+        </button>
+        <button
+          type="button"
+          className="history-row__menu"
+          aria-label="Chat options"
+          aria-expanded={menuSessionId === session.id}
+          onClick={(event) => {
+            event.stopPropagation()
+            setMenuSessionId(menuSessionId === session.id ? null : session.id)
+          }}
+        >
+          <MoreHorizontal size={16} />
+        </button>
+        {menuSessionId === session.id ? (
+          <div className="history-menu" onClick={(event) => event.stopPropagation()}>
+            <button type="button" onClick={() => togglePin(session.id)}>
+              {isPinned ? <PinOff size={14} /> : <Pin size={14} />}
+              {isPinned ? 'Unpin' : 'Pin'}
+            </button>
+            <button type="button" onClick={() => startRenaming(session)}>
+              <Pencil size={14} />
+              Rename
+            </button>
+            <button type="button" className="is-danger" onClick={() => deleteSession(session.id)}>
+              <Trash2 size={14} />
+              Delete
+            </button>
+          </div>
+        ) : null}
+      </div>
+    )
   }
 
   return (
@@ -1017,23 +1442,45 @@ export function App() {
           <button className="icon-button sidebar-close" type="button" aria-label="Close sidebar" onClick={() => setSidebarOpen(false)}>
             <ChevronLeft size={19} />
           </button>
+          {sessions.length ? (
+            <div className="history-search">
+              <Search size={14} aria-hidden="true" />
+              <input
+                type="search"
+                value={historyQuery}
+                placeholder="Search chats"
+                aria-label="Search chats"
+                onChange={(event) => setHistoryQuery(event.target.value)}
+              />
+              {historyQuery ? (
+                <button type="button" aria-label="Clear search" onClick={() => setHistoryQuery('')}>
+                  <X size={13} />
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
         <div className="history-list">
-          {sessions.length ? (
-            sessions.map((session) => (
-              <button
-                key={session.id}
-                type="button"
-                className={session.id === sessionId ? 'is-active' : ''}
-                onClick={() => loadSession(session.id)}
-              >
-                <span>{session.title}</span>
-                <small>{session.message_count} messages</small>
-              </button>
-            ))
+          {filteredSessions.length ? (
+            <>
+              {pinnedSessions.length ? <p className="history-label">Pinned</p> : null}
+              {pinnedSessions.map(renderSessionRow)}
+              {sessionGroups.map((group) => (
+                <React.Fragment key={group.label}>
+                  <p className="history-label">{group.label}</p>
+                  {group.sessions.map(renderSessionRow)}
+                </React.Fragment>
+              ))}
+            </>
           ) : (
-            <p>{apiOnline ? 'No saved chats yet.' : 'History appears when the API is online.'}</p>
+            <p>
+              {sessions.length
+                ? 'No chats match your search.'
+                : apiOnline
+                  ? 'No saved chats yet.'
+                  : 'History appears when the API is online.'}
+            </p>
           )}
         </div>
 
@@ -1044,6 +1491,7 @@ export function App() {
           </span>
         </div>
       </aside>
+      {sidebarOpen ? <div className="sidebar-backdrop" aria-hidden="true" onClick={() => setSidebarOpen(false)} /> : null}
       <button
         className="sidebar-edge-toggle"
         type="button"
@@ -1072,6 +1520,15 @@ export function App() {
             {activeDocument ? <span>{activeDocument.title}</span> : null}
           </div>
           <div className="topbar__actions">
+            <button
+              className="icon-button"
+              type="button"
+              aria-label="Toggle theme"
+              title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            >
+              {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+            </button>
             <select aria-label="Source" value={activeDoc} onChange={(event) => setActiveDoc(event.target.value)}>
               <option value="all">All sources</option>
               {documents.map((doc) => (
@@ -1085,7 +1542,15 @@ export function App() {
 
         <section className="chat-main">
           <div className="conversation">
-            <div className="messages" aria-live="polite">
+            <div
+              className="messages"
+              aria-live="polite"
+              ref={messagesRef}
+              onScroll={(event) => {
+                const el = event.currentTarget
+                setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 120)
+              }}
+            >
               {messages.length ? (
                 messages.map((message) => (
                   <ChatMessage
@@ -1096,6 +1561,10 @@ export function App() {
                     onShare={shareMessage}
                     onDownload={downloadSession}
                     onRetry={retryMessage}
+                    onEdit={(text) => {
+                      setInput(text)
+                      inputRef.current?.focus()
+                    }}
                     isSending={isSending}
                   />
                 ))
@@ -1104,8 +1573,8 @@ export function App() {
                   <div className="empty-chat__mark">
                     <img src={logoUrl} alt="" />
                   </div>
-                  <h1>Shell Conversational AI</h1>
-                  <p>Generate faster insight from your documents.</p>
+                  <h1>{timeGreeting()}</h1>
+                  <p>Ask anything about your indexed documents and videos.</p>
                   <SuggestedQuestions examples={starterExamples} disabled={isSending} onSelect={submitQuestion} />
                 </div>
               )}
@@ -1114,6 +1583,22 @@ export function App() {
                 <SuggestedQuestions examples={latestFollowUps} disabled={isSending} onSelect={submitQuestion} followUp />
               ) : null}
             </div>
+
+            {!atBottom && messages.length ? (
+              <button
+                className="scroll-bottom"
+                type="button"
+                aria-label="Scroll to latest message"
+                title="Scroll to latest"
+                onClick={() => {
+                  const el = messagesRef.current
+                  el?.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+                  setAtBottom(true)
+                }}
+              >
+                <ArrowDown size={16} />
+              </button>
+            ) : null}
 
             <form
               className="composer"
@@ -1132,20 +1617,33 @@ export function App() {
                     submitQuestion()
                   }
                 }}
-                placeholder="Ask a Question"
+                placeholder="Ask a question…"
                 rows={1}
-                disabled={isSending}
               />
               <div className="composer__controls">
-                <button className="send-button" type="submit" aria-label="Send question" disabled={isSending || !input.trim()}>
-                  <Send size={17} />
-                </button>
+                {isSending ? (
+                  <button
+                    className="send-button send-button--stop"
+                    type="button"
+                    aria-label="Stop generating"
+                    title="Stop generating"
+                    onClick={() => abortRef.current?.abort()}
+                  >
+                    <Square size={13} fill="currentColor" />
+                  </button>
+                ) : (
+                  <button className="send-button" type="submit" aria-label="Send question" disabled={!input.trim()}>
+                    <Send size={17} />
+                  </button>
+                )}
               </div>
             </form>
           </div>
         </section>
 
-        <div className={`copy-toast ${copied ? 'is-visible' : ''}`}>Copied</div>
+        <div className={`copy-toast ${toast.visible ? 'is-visible' : ''}`} role="status">
+          {toast.text}
+        </div>
       </main>
     </div>
   )
