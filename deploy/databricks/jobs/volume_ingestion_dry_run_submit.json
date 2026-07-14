@@ -1,0 +1,39 @@
+{
+  "run_name": "insight-copilot-volume-ingestion-dry-run",
+  "tasks": [
+    {
+      "task_key": "dry_run_volume_ingestion",
+      "description": "One-time dry run for Volume scanning and incremental detection. Does not call OCR, transcription, vision, or embedding models.",
+      "spark_python_task": {
+        "python_file": "/Workspace/Shared/insight-copilot/engine/app/pipelines/databricks_volume_ingest.py",
+        "source": "WORKSPACE",
+        "parameters": [
+          "--input-volume",
+          "/Volumes/insight-copilot/bronze/shell-bronze-insight-copilot",
+          "--output-root",
+          "/Volumes/insight-copilot/bronze/shell-bronze-insight-copilot/_insight_copilot_output",
+          "--secret-scope",
+          "insight-copilot",
+          "--dry-run",
+          "--max-files",
+          "10"
+        ]
+      },
+      "environment_key": "serverless_python",
+      "timeout_seconds": 3600
+    }
+  ],
+  "environments": [
+    {
+      "environment_key": "serverless_python",
+      "spec": {
+        "client": "2",
+        "dependencies": [
+          "imageio-ffmpeg==0.6.0",
+          "pydantic==2.12.5",
+          "python-dotenv==1.2.2"
+        ]
+      }
+    }
+  ]
+}

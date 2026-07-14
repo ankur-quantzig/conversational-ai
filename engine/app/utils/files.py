@@ -23,7 +23,13 @@ def data_root() -> Path:
 
 
 def output_dir(*parts: str) -> Path:
-    return ROOT.joinpath("output", *parts)
+    configured = (
+        os.getenv("INSIGHT_OUTPUT_ROOT")
+        or os.getenv("DATABRICKS_OUTPUT_VOLUME")
+        or os.getenv("OUTPUT_ROOT")
+    )
+    root = Path(configured).expanduser() if configured else ROOT / "output"
+    return root.joinpath(*parts)
 
 
 def display_path(path: Path) -> str:

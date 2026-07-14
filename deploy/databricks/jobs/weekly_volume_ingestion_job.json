@@ -1,0 +1,64 @@
+{
+  "name": "insight-copilot-weekly-volume-ingestion",
+  "tags": {
+    "app": "insight-copilot",
+    "owner": "engine",
+    "purpose": "incremental-volume-ingestion"
+  },
+  "schedule": {
+    "quartz_cron_expression": "0 0 2 ? * SUN *",
+    "timezone_id": "Asia/Kolkata",
+    "pause_status": "UNPAUSED"
+  },
+  "max_concurrent_runs": 1,
+  "tasks": [
+    {
+      "task_key": "incremental_volume_ingestion",
+      "description": "Scan Databricks Volume for new or updated documents/videos, extract OCR/audio/frames, chunk, embed, and rebuild LanceDB.",
+      "spark_python_task": {
+        "python_file": "/Workspace/Shared/insight-copilot/engine/app/pipelines/databricks_volume_ingest.py",
+        "source": "WORKSPACE",
+        "parameters": [
+          "--input-volume",
+          "/Volumes/insight-copilot/bronze/shell-bronze-insight-copilot",
+          "--output-root",
+          "/Volumes/insight-copilot/bronze/shell-bronze-insight-copilot/_insight_copilot_output",
+          "--secret-scope",
+          "insight-copilot",
+          "--ocr-workers",
+          "2",
+          "--vision-workers",
+          "2",
+          "--vision-timeout-seconds",
+          "120"
+        ]
+      },
+      "environment_key": "serverless_python",
+      "timeout_seconds": 21600,
+      "max_retries": 1,
+      "min_retry_interval_millis": 900000
+    }
+  ],
+  "environments": [
+    {
+      "environment_key": "serverless_python",
+      "spec": {
+        "client": "2",
+        "dependencies": [
+          "azure-ai-documentintelligence==1.0.2",
+          "azure-core==1.41.0",
+          "imageio-ffmpeg==0.6.0",
+          "lancedb==0.33.0",
+          "numpy==1.26.4",
+          "openai==2.44.0",
+          "pandas==2.2.2",
+          "pillow==12.0.0",
+          "pyarrow==16.1.0",
+          "PyMuPDF==1.28.0",
+          "pydantic==2.12.5",
+          "python-dotenv==1.2.2"
+        ]
+      }
+    }
+  ]
+}

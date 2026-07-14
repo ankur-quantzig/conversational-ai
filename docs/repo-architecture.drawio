@@ -1,0 +1,257 @@
+<mxfile host="app.diagrams.net" modified="2026-07-07T17:20:00.000Z" agent="Codex" version="24.7.17">
+  <diagram id="repo-architecture" name="Conversational AI Repo Architecture">
+    <mxGraphModel dx="2400" dy="1600" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2200" pageHeight="1500" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="title" value="Conversational AI Repository Architecture" style="text;html=1;strokeColor=none;fillColor=none;fontSize=28;fontStyle=1;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="780" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="subtitle" value="React UI + FastAPI backend + RAG engine + Databricks deployment, retrieval, prompts, security, storage, and indexing flows" style="text;html=1;strokeColor=none;fillColor=none;fontSize=14;fontColor=#475569;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="68" width="1050" height="28" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="legend" value="Legend&#xa;Solid arrow: runtime request/data flow&#xa;Dashed arrow: build/deploy/offline artifact flow&#xa;Green: UI/runtime app&#xa;Blue: backend/API&#xa;Purple: engine/RAG&#xa;Orange: stores/artifacts&#xa;Red: security controls" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8fafc;strokeColor=#cbd5e1;fontSize=12;align=left;spacing=10;" vertex="1" parent="1">
+          <mxGeometry x="1710" y="30" width="390" height="130" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="user" value="User / Analyst&#xa;Browser" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ecfdf5;strokeColor=#10b981;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="180" width="170" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="uiGroup" value="UI Folder: ui/" style="swimlane;whiteSpace=wrap;html=1;fillColor=#f0fdf4;strokeColor=#22c55e;fontSize=16;fontStyle=1;startSize=34;" vertex="1" parent="1">
+          <mxGeometry x="300" y="130" width="390" height="430" as="geometry"/>
+        </mxCell>
+        <mxCell id="uiReact" value="React App&#xa;ui/src/App.jsx&#xa;- chat shell&#xa;- session history&#xa;- source filters&#xa;- SSE stream parser&#xa;- follow-up chips&#xa;- diagram renderer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dcfce7;strokeColor=#16a34a;fontSize=12;align=left;spacing=8;" vertex="1" parent="uiGroup">
+          <mxGeometry x="25" y="60" width="340" height="135" as="geometry"/>
+        </mxCell>
+        <mxCell id="uiCss" value="Presentation&#xa;ui/src/styles.css&#xa;- chat layout&#xa;- progress timeline&#xa;- citations/sources&#xa;- video clip player&#xa;- professional icons" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#86efac;fontSize=12;align=left;spacing=8;" vertex="1" parent="uiGroup">
+          <mxGeometry x="25" y="215" width="160" height="145" as="geometry"/>
+        </mxCell>
+        <mxCell id="uiBuild" value="Vite Build&#xa;ui/dist/*&#xa;served by FastAPI SinglePageApp" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#86efac;fontSize=12;align=left;spacing=8;" vertex="1" parent="uiGroup">
+          <mxGeometry x="205" y="215" width="160" height="145" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="backendGroup" value="Backend Folder: backend/" style="swimlane;whiteSpace=wrap;html=1;fillColor=#eff6ff;strokeColor=#3b82f6;fontSize=16;fontStyle=1;startSize=34;" vertex="1" parent="1">
+          <mxGeometry x="760" y="120" width="530" height="520" as="geometry"/>
+        </mxCell>
+        <mxCell id="fastapi" value="FastAPI App&#xa;backend/app/api/main.py&#xa;- /chat/stream SSE&#xa;- /chat JSON fallback&#xa;- /sessions, /documents&#xa;- /diagnostics/runtime&#xa;- /media/videos, /media/video-clips" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dbeafe;strokeColor=#2563eb;fontSize=12;align=left;spacing=8;" vertex="1" parent="backendGroup">
+          <mxGeometry x="25" y="60" width="220" height="155" as="geometry"/>
+        </mxCell>
+        <mxCell id="streaming" value="Streaming Orchestrator&#xa;- status/progress events&#xa;- background retrieval thread&#xa;- heartbeat&#xa;- answer_delta chunks&#xa;- final payload" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#93c5fd;fontSize=12;align=left;spacing=8;" vertex="1" parent="backendGroup">
+          <mxGeometry x="275" y="60" width="220" height="155" as="geometry"/>
+        </mxCell>
+        <mxCell id="backendRetrieval" value="Retrieval API Layer&#xa;backend/app/api/retrieval.py&#xa;- hybrid retrieval orchestration&#xa;- BM25 per sub-question&#xa;- LanceDB vector retrieval&#xa;- dedupe + rerank&#xa;- 300 sec answer cache" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dbeafe;strokeColor=#2563eb;fontSize=12;align=left;spacing=8;" vertex="1" parent="backendGroup">
+          <mxGeometry x="25" y="245" width="220" height="165" as="geometry"/>
+        </mxCell>
+        <mxCell id="config" value="Configuration&#xa;backend/app/config.py&#xa;- APP_ENV&#xa;- LLM_PROVIDER&#xa;- Databricks endpoints&#xa;- retrieval_top_k&#xa;- rate limits / users&#xa;- app.yaml env vars" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#93c5fd;fontSize=12;align=left;spacing=8;" vertex="1" parent="backendGroup">
+          <mxGeometry x="275" y="245" width="220" height="165" as="geometry"/>
+        </mxCell>
+        <mxCell id="dbLayer" value="DB Layer&#xa;backend/app/db/postgres.py&#xa;- PostgreSQL when configured&#xa;- SQLite local fallback&#xa;- sessions/messages&#xa;- audit events&#xa;- feedback/shared messages" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#93c5fd;fontSize=12;align=left;spacing=8;" vertex="1" parent="backendGroup">
+          <mxGeometry x="150" y="430" width="250" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="securityGroup" value="Security Controls" style="swimlane;whiteSpace=wrap;html=1;fillColor=#fef2f2;strokeColor=#ef4444;fontSize=16;fontStyle=1;startSize=34;" vertex="1" parent="1">
+          <mxGeometry x="760" y="680" width="530" height="210" as="geometry"/>
+        </mxCell>
+        <mxCell id="auth" value="Auth + RBAC&#xa;security/auth.py&#xa;- current_user&#xa;- role checks&#xa;- document access" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fee2e2;strokeColor=#dc2626;fontSize=12;align=left;spacing=8;" vertex="1" parent="securityGroup">
+          <mxGeometry x="25" y="60" width="150" height="115" as="geometry"/>
+        </mxCell>
+        <mxCell id="guardrails" value="Guardrails&#xa;security/guardrails.py&#xa;- deterministic checks&#xa;- model classifier&#xa;- fail-open operational mode" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fee2e2;strokeColor=#dc2626;fontSize=12;align=left;spacing=8;" vertex="1" parent="securityGroup">
+          <mxGeometry x="190" y="60" width="150" height="115" as="geometry"/>
+        </mxCell>
+        <mxCell id="quota" value="Rate + Quota&#xa;rate_limit.py&#xa;quota.py&#xa;- tenant/user buckets&#xa;- basic vs power users" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fee2e2;strokeColor=#dc2626;fontSize=12;align=left;spacing=8;" vertex="1" parent="securityGroup">
+          <mxGeometry x="355" y="60" width="150" height="115" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="engineGroup" value="Engine Folder: engine/" style="swimlane;whiteSpace=wrap;html=1;fillColor=#faf5ff;strokeColor=#a855f7;fontSize=16;fontStyle=1;startSize=34;" vertex="1" parent="1">
+          <mxGeometry x="1370" y="190" width="700" height="610" as="geometry"/>
+        </mxCell>
+        <mxCell id="promptStore" value="Prompt Store&#xa;engine/app/prompts/*.json&#xa;engine/app/rag/prompt_store.py&#xa;- static system prompts&#xa;- dynamic human prompts&#xa;- answer/follow-up/rephrase/diagram tasks" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f3e8ff;strokeColor=#9333ea;fontSize=12;align=left;spacing=8;" vertex="1" parent="engineGroup">
+          <mxGeometry x="25" y="60" width="210" height="150" as="geometry"/>
+        </mxCell>
+        <mxCell id="answerEngine" value="Answer Engine&#xa;engine/app/rag/answer.py&#xa;- structured JSON answer&#xa;- citations/confidence&#xa;- follow-up generation&#xa;- question classification/rewrite&#xa;- optional Mermaid diagram&#xa;- 300 sec LLM cache" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f3e8ff;strokeColor=#9333ea;fontSize=12;align=left;spacing=8;" vertex="1" parent="engineGroup">
+          <mxGeometry x="260" y="60" width="210" height="175" as="geometry"/>
+        </mxCell>
+        <mxCell id="retriever" value="Retriever&#xa;engine/app/rag/retriever.py&#xa;- lancedb_retrieve&#xa;- embedding query&#xa;- table search" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d8b4fe;fontSize=12;align=left;spacing=8;" vertex="1" parent="engineGroup">
+          <mxGeometry x="495" y="60" width="175" height="115" as="geometry"/>
+        </mxCell>
+        <mxCell id="clients" value="Clients&#xa;engine/app/clients/&#xa;- databricks_model_serving.py&#xa;- lancedb_store.py&#xa;- document_intelligence.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d8b4fe;fontSize=12;align=left;spacing=8;" vertex="1" parent="engineGroup">
+          <mxGeometry x="495" y="195" width="175" height="115" as="geometry"/>
+        </mxCell>
+        <mxCell id="ingestion" value="Ingestion Pipelines&#xa;engine/app/pipelines/&#xa;- process_pdf.py&#xa;- process_video.py&#xa;- build_chunks.py&#xa;- build_lancedb_index.py&#xa;- build_combined_lancedb_index.py&#xa;- query_rag.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f3e8ff;strokeColor=#9333ea;fontSize=12;align=left;spacing=8;" vertex="1" parent="engineGroup">
+          <mxGeometry x="25" y="260" width="210" height="165" as="geometry"/>
+        </mxCell>
+        <mxCell id="services" value="Processing Services&#xa;engine/app/services/&#xa;- extract_layout.py&#xa;- extract_tables.py&#xa;- chunk_document.py&#xa;- embed_chunks.py&#xa;- video_processing.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d8b4fe;fontSize=12;align=left;spacing=8;" vertex="1" parent="engineGroup">
+          <mxGeometry x="260" y="270" width="210" height="145" as="geometry"/>
+        </mxCell>
+        <mxCell id="schemas" value="Schemas&#xa;engine/app/schemas/&#xa;- extracted_document.py&#xa;- chunk.py&#xa;Pydantic contracts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d8b4fe;fontSize=12;align=left;spacing=8;" vertex="1" parent="engineGroup">
+          <mxGeometry x="495" y="335" width="175" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="ragSteps" value="Runtime RAG Steps&#xa;1. Check if turn is follow-up&#xa;2. Rewrite follow-up to standalone question&#xa;3. Create original + 3 similar questions&#xa;4. BM25 + vector retrieval per question&#xa;5. Merge duplicate chunks&#xa;6. Rerank to 6 chunks&#xa;7. Generate answer + citations&#xa;8. Generate follow-ups and diagram decision" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#faf5ff;strokeColor=#a855f7;fontSize=12;align=left;spacing=8;" vertex="1" parent="engineGroup">
+          <mxGeometry x="130" y="465" width="440" height="115" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="storesGroup" value="Stores, Artifacts, and External Services" style="swimlane;whiteSpace=wrap;html=1;fillColor=#fff7ed;strokeColor=#f97316;fontSize=16;fontStyle=1;startSize=34;" vertex="1" parent="1">
+          <mxGeometry x="60" y="950" width="2010" height="260" as="geometry"/>
+        </mxCell>
+        <mxCell id="dbStore" value="Chat Store&#xa;PostgreSQL or SQLite&#xa;- chat_sessions&#xa;- chat_messages&#xa;- audit_events&#xa;- message_feedback&#xa;- shared_messages" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffedd5;strokeColor=#ea580c;fontSize=12;align=left;spacing=8;" vertex="1" parent="storesGroup">
+          <mxGeometry x="30" y="65" width="190" height="145" as="geometry"/>
+        </mxCell>
+        <mxCell id="chunksStore" value="Chunk Artifacts&#xa;output/chunks/*.jsonl&#xa;- PDF chunks&#xa;- video transcript/frame chunks&#xa;- metadata/page/time labels" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffedd5;strokeColor=#ea580c;fontSize=12;align=left;spacing=8;" vertex="1" parent="storesGroup">
+          <mxGeometry x="250" y="65" width="190" height="145" as="geometry"/>
+        </mxCell>
+        <mxCell id="embedStore" value="Embedding Artifacts&#xa;output/embeddings/*&#xa;- embedded JSONL&#xa;- model summaries&#xa;- Databricks BGE embeddings" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffedd5;strokeColor=#ea580c;fontSize=12;align=left;spacing=8;" vertex="1" parent="storesGroup">
+          <mxGeometry x="470" y="65" width="190" height="145" as="geometry"/>
+        </mxCell>
+        <mxCell id="lancedb" value="LanceDB Vector DB&#xa;table: rag_chunks&#xa;- vector similarity search&#xa;- used by retriever.py&#xa;- created at startup if missing" style="shape=cylinder3d;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#ffedd5;strokeColor=#ea580c;fontSize=12;align=center;" vertex="1" parent="storesGroup">
+          <mxGeometry x="690" y="65" width="180" height="145" as="geometry"/>
+        </mxCell>
+        <mxCell id="videoClips" value="Media Artifacts&#xa;video sources + clips&#xa;output/video_clips&#xa;deploy/databricks/artifacts/video_clips&#xa;served by /media/*" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffedd5;strokeColor=#ea580c;fontSize=12;align=left;spacing=8;" vertex="1" parent="storesGroup">
+          <mxGeometry x="900" y="65" width="220" height="145" as="geometry"/>
+        </mxCell>
+        <mxCell id="dbxServing" value="Databricks Model Serving&#xa;- chat endpoint: Claude/Sonnet&#xa;- embedding endpoint: BGE&#xa;- optional guardrail endpoint&#xa;- DATABRICKS_HOST/TOKEN" style="shape=cloud;whiteSpace=wrap;html=1;fillColor=#fff7ed;strokeColor=#f97316;fontSize=12;align=center;" vertex="1" parent="storesGroup">
+          <mxGeometry x="1160" y="60" width="230" height="150" as="geometry"/>
+        </mxCell>
+        <mxCell id="docIntel" value="Document Intelligence / OCR&#xa;used by extraction pipelines&#xa;PDF layout, tables, visual hints" style="shape=cloud;whiteSpace=wrap;html=1;fillColor=#fff7ed;strokeColor=#f97316;fontSize=12;align=center;" vertex="1" parent="storesGroup">
+          <mxGeometry x="1425" y="60" width="210" height="150" as="geometry"/>
+        </mxCell>
+        <mxCell id="openai" value="OpenAI Optional Path&#xa;LLM_PROVIDER=openai&#xa;answer/follow-up/diagram model fallback" style="shape=cloud;whiteSpace=wrap;html=1;fillColor=#fff7ed;strokeColor=#f97316;fontSize=12;align=center;" vertex="1" parent="storesGroup">
+          <mxGeometry x="1670" y="60" width="210" height="150" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="deployGroup" value="Deployment and Repo Operations" style="swimlane;whiteSpace=wrap;html=1;fillColor=#f8fafc;strokeColor=#64748b;fontSize=16;fontStyle=1;startSize=34;" vertex="1" parent="1">
+          <mxGeometry x="60" y="1260" width="2010" height="190" as="geometry"/>
+        </mxCell>
+        <mxCell id="github" value="GitHub Repo&#xa;ankur-quantzig/conversational-ai&#xa;- main branch&#xa;- private repo&#xa;- CI workflow" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#64748b;fontSize=12;align=left;spacing=8;" vertex="1" parent="deployGroup">
+          <mxGeometry x="30" y="60" width="210" height="105" as="geometry"/>
+        </mxCell>
+        <mxCell id="ci" value="GitHub Actions CI&#xa;.github/workflows/ci.yml&#xa;- hygiene checks&#xa;- Python compile/import smoke&#xa;- UI production build" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#64748b;fontSize=12;align=left;spacing=8;" vertex="1" parent="deployGroup">
+          <mxGeometry x="280" y="60" width="230" height="105" as="geometry"/>
+        </mxCell>
+        <mxCell id="databricksApp" value="Databricks App&#xa;insight-copilot&#xa;deploy/databricks/start_databricks_app.py&#xa;- restores packaged artifacts&#xa;- ensures LanceDB table&#xa;- ensures frontend build&#xa;- starts uvicorn app.api.main:app" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#64748b;fontSize=12;align=left;spacing=8;" vertex="1" parent="deployGroup">
+          <mxGeometry x="550" y="45" width="310" height="135" as="geometry"/>
+        </mxCell>
+        <mxCell id="appYaml" value="Secret Runtime Config&#xa;app.yaml ignored by Git&#xa;app.example.yaml tracked&#xa;- Databricks token/host&#xa;- model endpoints&#xa;- env + limits" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#64748b;fontSize=12;align=left;spacing=8;" vertex="1" parent="deployGroup">
+          <mxGeometry x="900" y="60" width="230" height="105" as="geometry"/>
+        </mxCell>
+        <mxCell id="namespace" value="Split Namespace Bridge&#xa;app/__init__.py&#xa;PYTHONPATH includes:&#xa;- backend/&#xa;- engine/&#xa;- repo root" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#64748b;fontSize=12;align=left;spacing=8;" vertex="1" parent="deployGroup">
+          <mxGeometry x="1170" y="60" width="220" height="105" as="geometry"/>
+        </mxCell>
+        <mxCell id="repoSplit" value="Team Ownership Split&#xa;ui/ = UI team&#xa;backend/ = backend/API team&#xa;engine/ = RAG/main engine team&#xa;deploy/ = deployment assets" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#64748b;fontSize=12;align=left;spacing=8;" vertex="1" parent="deployGroup">
+          <mxGeometry x="1430" y="60" width="250" height="105" as="geometry"/>
+        </mxCell>
+        <mxCell id="workspace" value="Databricks Workspace Source&#xa;/Workspace/Shared/insight-copilot&#xa;Snapshot deploy creates active source under /Workspace/Users/.../src/&lt;deployment_id&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#64748b;fontSize=12;align=left;spacing=8;" vertex="1" parent="deployGroup">
+          <mxGeometry x="1720" y="60" width="250" height="105" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="flowChat" value="Runtime Chat Flow" style="text;html=1;strokeColor=none;fillColor=none;fontSize=18;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="60" y="105" width="250" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="flowIngest" value="Offline Indexing Flow" style="text;html=1;strokeColor=none;fillColor=none;fontSize=18;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1370" y="835" width="250" height="30" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_user_ui" value="question / click follow-up" style="endArrow=block;html=1;rounded=0;strokeColor=#16a34a;fontSize=11;" edge="1" parent="1" source="user" target="uiReact">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_ui_api" value="fetch /chat/stream, /sessions, /documents" style="endArrow=block;html=1;rounded=0;strokeColor=#2563eb;fontSize=11;" edge="1" parent="1" source="uiReact" target="fastapi">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_api_stream_ui" value="SSE status/progress/answer_delta/final" style="endArrow=block;html=1;rounded=0;strokeColor=#10b981;fontSize=11;" edge="1" parent="1" source="streaming" target="uiReact">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_api_security" value="access, safety, quota" style="endArrow=block;html=1;rounded=0;strokeColor=#dc2626;fontSize=11;" edge="1" parent="1" source="fastapi" target="securityGroup">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_fastapi_stream" value="orchestrates request" style="endArrow=block;html=1;rounded=0;strokeColor=#2563eb;fontSize=11;" edge="1" parent="1" source="fastapi" target="streaming">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_stream_retrieval" value="answer_question(progress callback)" style="endArrow=block;html=1;rounded=0;strokeColor=#2563eb;fontSize=11;" edge="1" parent="1" source="streaming" target="backendRetrieval">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_backend_answer" value="structured answer / follow-up / diagram tasks" style="endArrow=block;html=1;rounded=0;strokeColor=#9333ea;fontSize=11;" edge="1" parent="1" source="backendRetrieval" target="answerEngine">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_answer_prompts" value="fetch system + human prompts" style="endArrow=block;html=1;rounded=0;strokeColor=#9333ea;fontSize=11;" edge="1" parent="1" source="answerEngine" target="promptStore">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_backend_retriever" value="vector search" style="endArrow=block;html=1;rounded=0;strokeColor=#9333ea;fontSize=11;" edge="1" parent="1" source="backendRetrieval" target="retriever">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_retriever_lancedb" value="query rag_chunks" style="endArrow=block;html=1;rounded=0;strokeColor=#ea580c;fontSize=11;" edge="1" parent="1" source="retriever" target="lancedb">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_backend_chunks" value="BM25 reads chunks" style="endArrow=block;html=1;rounded=0;strokeColor=#ea580c;fontSize=11;" edge="1" parent="1" source="backendRetrieval" target="chunksStore">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_answer_dbx" value="chat completions / embeddings" style="endArrow=block;html=1;rounded=0;strokeColor=#ea580c;fontSize=11;" edge="1" parent="1" source="answerEngine" target="dbxServing">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_clients_dbx" value="HTTP serving endpoints" style="endArrow=block;html=1;rounded=0;strokeColor=#ea580c;fontSize=11;" edge="1" parent="1" source="clients" target="dbxServing">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_openai_optional" value="optional provider path" style="endArrow=block;html=1;rounded=0;strokeColor=#ea580c;fontSize=11;dashed=1;" edge="1" parent="1" source="answerEngine" target="openai">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_api_db" value="persist conversations, audit, feedback" style="endArrow=block;html=1;rounded=0;strokeColor=#ea580c;fontSize=11;" edge="1" parent="1" source="dbLayer" target="dbStore">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_fastapi_db" value="sessions/messages" style="endArrow=block;html=1;rounded=0;strokeColor=#2563eb;fontSize=11;" edge="1" parent="1" source="fastapi" target="dbLayer">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_fastapi_media" value="serve relevant clips/sources" style="endArrow=block;html=1;rounded=0;strokeColor=#ea580c;fontSize=11;" edge="1" parent="1" source="fastapi" target="videoClips">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_ingest_services" value="extract, chunk, embed" style="endArrow=block;html=1;rounded=0;strokeColor=#9333ea;fontSize=11;dashed=1;" edge="1" parent="1" source="ingestion" target="services">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_services_docintel" value="PDF layout/OCR/tables" style="endArrow=block;html=1;rounded=0;strokeColor=#ea580c;fontSize=11;dashed=1;" edge="1" parent="1" source="services" target="docIntel">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_services_dbx" value="video frame analysis / embeddings" style="endArrow=block;html=1;rounded=0;strokeColor=#ea580c;fontSize=11;dashed=1;" edge="1" parent="1" source="services" target="dbxServing">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_services_chunks" value="write chunk JSONL" style="endArrow=block;html=1;rounded=0;strokeColor=#ea580c;fontSize=11;dashed=1;" edge="1" parent="1" source="services" target="chunksStore">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_services_embeds" value="write embedded JSONL" style="endArrow=block;html=1;rounded=0;strokeColor=#ea580c;fontSize=11;dashed=1;" edge="1" parent="1" source="services" target="embedStore">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_embeds_lancedb" value="build combined LanceDB index" style="endArrow=block;html=1;rounded=0;strokeColor=#ea580c;fontSize=11;dashed=1;" edge="1" parent="1" source="embedStore" target="lancedb">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_ingest_schemas" value="validate contracts" style="endArrow=block;html=1;rounded=0;strokeColor=#9333ea;fontSize=11;dashed=1;" edge="1" parent="1" source="ingestion" target="schemas">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_github_ci" value="push / PR" style="endArrow=block;html=1;rounded=0;strokeColor=#64748b;fontSize=11;dashed=1;" edge="1" parent="1" source="github" target="ci">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_workspace_app" value="workspace source snapshot" style="endArrow=block;html=1;rounded=0;strokeColor=#64748b;fontSize=11;dashed=1;" edge="1" parent="1" source="workspace" target="databricksApp">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_app_yaml" value="runtime env/secrets" style="endArrow=block;html=1;rounded=0;strokeColor=#64748b;fontSize=11;dashed=1;" edge="1" parent="1" source="appYaml" target="databricksApp">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_app_backend" value="uvicorn app.api.main:app" style="endArrow=block;html=1;rounded=0;strokeColor=#64748b;fontSize=11;dashed=1;" edge="1" parent="1" source="databricksApp" target="fastapi">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_app_ui" value="serves ui/dist" style="endArrow=block;html=1;rounded=0;strokeColor=#64748b;fontSize=11;dashed=1;" edge="1" parent="1" source="databricksApp" target="uiBuild">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_app_lancedb" value="ensure rag_chunks exists" style="endArrow=block;html=1;rounded=0;strokeColor=#64748b;fontSize=11;dashed=1;" edge="1" parent="1" source="databricksApp" target="lancedb">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_namespace_backend" value="shared app namespace" style="endArrow=block;html=1;rounded=0;strokeColor=#64748b;fontSize=11;dashed=1;" edge="1" parent="1" source="namespace" target="fastapi">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_namespace_engine" value="imports app.rag / app.clients" style="endArrow=block;html=1;rounded=0;strokeColor=#64748b;fontSize=11;dashed=1;" edge="1" parent="1" source="namespace" target="engineGroup">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

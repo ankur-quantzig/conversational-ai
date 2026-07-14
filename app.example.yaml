@@ -27,6 +27,10 @@ env:
     value: databricks-claude-sonnet-4
   - name: DATABRICKS_EMBEDDING_ENDPOINT
     value: databricks-bge-large-en
+  - name: DATABRICKS_DATA_VOLUME
+    value: /Volumes/<catalog>/<schema>/<input_volume>
+  - name: DATABRICKS_OUTPUT_VOLUME
+    value: /Volumes/<catalog>/<schema>/<output_volume>/insight-copilot-output
   - name: DATABASE_URL
     value: sqlite:///output/chat_history.sqlite3
   - name: GUARDRAIL_CONFIDENCE_THRESHOLD

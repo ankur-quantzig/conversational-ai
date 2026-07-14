@@ -64,6 +64,11 @@ def restore_artifacts() -> None:
     already be synced directly to ROOT/output/embeddings. Deleting them would
     prevent LanceDB from being built.
     """
+    configured_output = os.getenv("INSIGHT_OUTPUT_ROOT") or os.getenv("DATABRICKS_OUTPUT_VOLUME") or os.getenv("OUTPUT_ROOT")
+    if configured_output:
+        print(f"Using external output root {configured_output}. Skipping packaged artifact restore.")
+        return
+
     source = ROOT / "deploy" / "databricks" / "artifacts" / "output"
     target = ROOT / "output"
 
@@ -135,7 +140,9 @@ def ensure_lancedb_index() -> None:
     except Exception as exc:
         print(f"LanceDB table `{table_name}` does not exist yet. Reason: {exc}")
 
-    embedded_dir = ROOT / "output" / "embeddings"
+    from app.utils.files import output_dir
+
+    embedded_dir = output_dir("embeddings")
     embedded_files = sorted(embedded_dir.glob("*-embedded.jsonl"))
 
     if not embedded_files:

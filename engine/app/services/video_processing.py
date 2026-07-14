@@ -70,11 +70,28 @@ class VideoPaths:
     summary: Path
 
 
-def require_binary(binary: str) -> None:
-    if not shutil.which(binary):
+def binary_path(binary: str) -> str | None:
+    found = shutil.which(binary)
+    if found:
+        return found
+    if binary == "ffmpeg":
+        try:
+            import imageio_ffmpeg
+
+            return imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:
+            return None
+    return None
+
+
+def require_binary(binary: str) -> str:
+    path = binary_path(binary)
+    if not path:
         raise RuntimeError(
-            f"`{binary}` is required for video processing. Install it locally or run the Docker API image."
+            f"`{binary}` is required for video processing. Install it locally, add it to the Databricks image, "
+            "or include imageio-ffmpeg for ffmpeg."
         )
+    return path
 
 
 def log_step(message: str) -> None:
@@ -107,40 +124,58 @@ def run_command(args: list[str]) -> None:
 
 
 def probe_video(video_path: Path) -> dict[str, Any]:
-    require_binary("ffprobe")
-    completed = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-print_format",
-            "json",
-            "-show_format",
-            "-show_streams",
-            str(video_path),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    payload = json.loads(completed.stdout)
-    video_stream = next((stream for stream in payload.get("streams", []) if stream.get("codec_type") == "video"), {})
-    duration = float(payload.get("format", {}).get("duration") or video_stream.get("duration") or 0)
+    ffprobe = binary_path("ffprobe")
+    if ffprobe:
+        completed = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-print_format",
+                "json",
+                "-show_format",
+                "-show_streams",
+                str(video_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(completed.stdout)
+        video_stream = next((stream for stream in payload.get("streams", []) if stream.get("codec_type") == "video"), {})
+        duration = float(payload.get("format", {}).get("duration") or video_stream.get("duration") or 0)
+        return {
+            "duration_seconds": duration,
+            "width": video_stream.get("width"),
+            "height": video_stream.get("height"),
+            "fps": video_stream.get("r_frame_rate"),
+            "format": payload.get("format", {}),
+        }
+
+    ffmpeg = require_binary("ffmpeg")
+    completed = subprocess.run([ffmpeg, "-hide_banner", "-i", str(video_path)], check=False, capture_output=True, text=True)
+    stderr = completed.stderr or completed.stdout
+    duration_match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", stderr)
+    width_match = re.search(r"Video:.*?(\d{2,5})x(\d{2,5})", stderr)
+    duration = 0.0
+    if duration_match:
+        hours, minutes, seconds = duration_match.groups()
+        duration = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
     return {
         "duration_seconds": duration,
-        "width": video_stream.get("width"),
-        "height": video_stream.get("height"),
-        "fps": video_stream.get("r_frame_rate"),
-        "format": payload.get("format", {}),
+        "width": int(width_match.group(1)) if width_match else None,
+        "height": int(width_match.group(2)) if width_match else None,
+        "fps": None,
+        "format": {"probe_source": "ffmpeg_stderr"},
     }
 
 
 def extract_audio(video_path: Path, audio_path: Path) -> None:
-    require_binary("ffmpeg")
+    ffmpeg = require_binary("ffmpeg")
     audio_path.parent.mkdir(parents=True, exist_ok=True)
     run_command(
         [
-            "ffmpeg",
+            ffmpeg,
             "-y",
             "-i",
             str(video_path),
@@ -157,12 +192,12 @@ def extract_audio(video_path: Path, audio_path: Path) -> None:
 
 
 def extract_frames(video_path: Path, frames_dir: Path, interval_seconds: float) -> list[dict[str, Any]]:
-    require_binary("ffmpeg")
+    ffmpeg = require_binary("ffmpeg")
     frames_dir.mkdir(parents=True, exist_ok=True)
     frame_pattern = frames_dir / "frame_%06d.jpg"
     run_command(
         [
-            "ffmpeg",
+            ffmpeg,
             "-y",
             "-i",
             str(video_path),
