@@ -4,17 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Insight Copilot</title>
-    <script>
-      try {
-        var theme = new URLSearchParams(window.location.search).get('theme') || window.localStorage.getItem('insight-copilot-theme')
-        if (theme !== 'dark' && theme !== 'light') {
-          theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-        }
-        document.documentElement.dataset.theme = theme
-      } catch (error) {
-        /* default to light */
-      }
-    </script>
+    <meta name="referrer" content="no-referrer" />
+    <script src="/theme-init.js"></script>
     <script type="module" src="/src/main.jsx"></script>
   </head>
   <body>

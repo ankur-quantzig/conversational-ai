@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useContext, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowDown,
   BotMessageSquare,
@@ -43,6 +43,8 @@ const starterExamples = [
 ]
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api'
+const MAX_QUESTION_LENGTH = 4000
+const MAX_TITLE_LENGTH = 200
 const UNABLE_TO_GENERATE_MESSAGE = 'I am unable to generate the response at the moment. Please contact Admin.'
 
 function parseChunks() {
@@ -261,6 +263,27 @@ function timeGreeting() {
   return 'Good evening'
 }
 
+function relativeTime(value) {
+  const date = value ? new Date(value) : null
+  if (!date || Number.isNaN(date.getTime())) return ''
+  const minutes = Math.floor((Date.now() - date.getTime()) / 60000)
+  if (minutes < 1) return 'just now'
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  if (days < 7) return `${days}d ago`
+  return new Intl.DateTimeFormat([], { month: 'short', day: 'numeric' }).format(date)
+}
+
+function firstNameFrom(profile) {
+  const raw = profile?.name || profile?.email || ''
+  if (!raw) return ''
+  const base = raw.includes('@') ? raw.split('@')[0] : raw
+  const first = base.split(/[\s._-]+/)[0]
+  return first ? first.charAt(0).toUpperCase() + first.slice(1) : ''
+}
+
 function formatVideoTime(seconds) {
   const totalSeconds = Math.max(0, Math.floor(Number(seconds) || 0))
   const minutes = Math.floor(totalSeconds / 60)
@@ -357,8 +380,37 @@ function SourceChunk({ source, citation, index, onClose }) {
   )
 }
 
+const CitationContext = React.createContext(null)
+
+function CitationMark({ n }) {
+  const context = useContext(CitationContext)
+  const target = context?.resolve(n)
+  if (target === null || target === undefined) return <>[{n}]</>
+  return (
+    <sup className="cite-mark">
+      <button
+        type="button"
+        aria-label={`Open source ${n}`}
+        aria-expanded={context.openSource === target}
+        onClick={() => context.onToggle(target)}
+      >
+        {n}
+      </button>
+    </sup>
+  )
+}
+
+function safeHref(url) {
+  try {
+    const parsed = new URL(String(url), window.location.origin)
+    return ['http:', 'https:', 'mailto:'].includes(parsed.protocol) ? parsed.href : null
+  } catch {
+    return null
+  }
+}
+
 function renderInline(text, keyPrefix = 'inline') {
-  const pattern = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)\s]+\)|\*[^*\n]+\*)/g
+  const pattern = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)\s]+\)|~~[^~\n]+~~|\[\d{1,2}\]|\*[^*\n]+\*)/g
   return String(text)
     .split(pattern)
     .map((part, index) => {
@@ -370,14 +422,23 @@ function renderInline(text, keyPrefix = 'inline') {
       if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
         return <code key={key}>{part.slice(1, -1)}</code>
       }
+      if (part.startsWith('~~') && part.endsWith('~~') && part.length > 4) {
+        return <del key={key}>{part.slice(2, -2)}</del>
+      }
       if (part.startsWith('[')) {
         const link = part.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/)
         if (link) {
+          const href = safeHref(link[2])
+          if (!href) return <span key={key}>{link[1]}</span>
           return (
-            <a key={key} href={link[2]} target="_blank" rel="noopener noreferrer">
+            <a key={key} href={href} target="_blank" rel="noopener noreferrer">
               {link[1]}
             </a>
           )
+        }
+        const marker = part.match(/^\[(\d{1,2})\]$/)
+        if (marker) {
+          return <CitationMark key={key} n={Number(marker[1])} />
         }
       }
       if (part.startsWith('*') && part.endsWith('*') && part.length > 2) {
@@ -484,6 +545,67 @@ function StructuredContent({ text, children }) {
       index += 1
       continue
     }
+    if (/^(-{3,}|_{3,}|\*{3,})$/.test(trimmed)) {
+      flushAll(index)
+      blocks.push(<hr key={`hr-${index}`} />)
+      index += 1
+      continue
+    }
+    if (trimmed.startsWith('>')) {
+      flushAll(index)
+      const quoteLines = []
+      while (index < lines.length && lines[index].trim().startsWith('>')) {
+        quoteLines.push(lines[index].trim().replace(/^>\s?/, ''))
+        index += 1
+      }
+      blocks.push(<blockquote key={`q-${index}`}>{renderInline(quoteLines.join(' '), `q-${index}`)}</blockquote>)
+      continue
+    }
+    const nextLine = index + 1 < lines.length ? lines[index + 1].trim() : ''
+    const isTableStart =
+      trimmed.includes('|') && nextLine.includes('-') && /^\|?[\s:-]+(\|[\s:-]+)+\|?$/.test(nextLine)
+    if (isTableStart) {
+      flushAll(index)
+      const splitRow = (row) =>
+        row
+          .replace(/^\|/, '')
+          .replace(/\|$/, '')
+          .split('|')
+          .map((cell) => cell.trim())
+      const headerCells = splitRow(trimmed)
+      const tableKey = `t-${index}`
+      index += 2
+      const bodyRows = []
+      while (index < lines.length && lines[index].includes('|') && lines[index].trim()) {
+        bodyRows.push(splitRow(lines[index].trim()))
+        index += 1
+      }
+      blocks.push(
+        <div className="md-table" key={tableKey}>
+          <table>
+            <thead>
+              <tr>
+                {headerCells.map((cell, cellIndex) => (
+                  <th key={`${tableKey}-h-${cellIndex}`}>{renderInline(cell, `${tableKey}-h-${cellIndex}`)}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {bodyRows.map((row, rowIndex) => (
+                <tr key={`${tableKey}-r-${rowIndex}`}>
+                  {headerCells.map((_, cellIndex) => (
+                    <td key={`${tableKey}-r-${rowIndex}-${cellIndex}`}>
+                      {renderInline(row[cellIndex] ?? '', `${tableKey}-r-${rowIndex}-${cellIndex}`)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      )
+      continue
+    }
     const bullet = trimmed.match(/^[-*]\s+(.+)$/)
     const ordered = trimmed.match(/^\d+[.)]\s+(.+)$/)
     if (bullet) {
@@ -581,6 +703,8 @@ function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry
   const [openSource, setOpenSource] = useState(null)
   const [showSources, setShowSources] = useState(false)
   const [justCopied, setJustCopied] = useState(false)
+  const [isEditing, setIsEditing] = useState(false)
+  const [draft, setDraft] = useState('')
   const citations = !isUser ? buildDisplayCitations(message) : []
   const activeCitation = openSource === null ? null : citations[openSource]
   const stageLabel = {
@@ -609,8 +733,28 @@ function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry
   const actionsDisabled = message.pending || message.status === 'error'
   const toggleSource = (index) => setOpenSource(openSource === index ? null : index)
 
+  function submitEdit() {
+    const text = draft.trim()
+    if (!text || isSending) return
+    setIsEditing(false)
+    onEdit(text)
+  }
+  const citationContext = {
+    openSource,
+    onToggle: toggleSource,
+    resolve(n) {
+      if (isUser || !citations.length) return null
+      const byIndex = citations.findIndex((item) => item.citation?.source_index === n)
+      if (byIndex >= 0) return byIndex
+      return n >= 1 && n <= citations.length ? n - 1 : null
+    },
+  }
+
   return (
-    <article className={`message ${isUser ? 'message--user' : 'message--assistant'}`}>
+    <article
+      className={`message ${isUser ? 'message--user' : 'message--assistant'}`}
+      aria-busy={!isUser && message.pending ? true : undefined}
+    >
       <div className="avatar" aria-hidden="true">
         <Icon size={17} />
       </div>
@@ -623,10 +767,42 @@ function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry
         </div>
         {!isUser && message.heading && !message.pending ? <h2 className="response-heading">{message.heading}</h2> : null}
         {!isUser && message.progressSteps?.length && message.pending ? <AgentRunTimeline steps={message.progressSteps} activeStatus={message.status} /> : null}
-        {message.content ? (
-          <StructuredContent text={message.content}>
-            <CitationList items={citations} openSource={openSource} onToggle={toggleSource} />
-          </StructuredContent>
+        {isUser && isEditing ? (
+          <div className="message-edit">
+            <textarea
+              aria-label="Edit question"
+              value={draft}
+              maxLength={MAX_QUESTION_LENGTH}
+              autoFocus
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault()
+                  submitEdit()
+                }
+                if (event.key === 'Escape') {
+                  event.stopPropagation()
+                  setIsEditing(false)
+                }
+              }}
+            />
+            <div className="message-edit__actions">
+              <span className="message-edit__hint">Enter to send · Esc to cancel</span>
+              <button type="button" className="message-edit__cancel" onClick={() => setIsEditing(false)}>
+                Cancel
+              </button>
+              <button type="button" className="message-edit__send" disabled={!draft.trim() || isSending} onClick={submitEdit}>
+                Send
+              </button>
+            </div>
+          </div>
+        ) : message.content ? (
+          <CitationContext.Provider value={citationContext}>
+            <StructuredContent text={message.content}>
+              {!isUser && message.pending ? <span className="stream-caret" aria-hidden="true" /> : null}
+              <CitationList items={citations} openSource={openSource} onToggle={toggleSource} />
+            </StructuredContent>
+          </CitationContext.Provider>
         ) : !isUser && message.pending ? (
           <div className="typing-indicator" role="status" aria-label="Agent is responding">
             <span />
@@ -708,7 +884,16 @@ function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry
           </div>
         ) : (
           <div className="message-actions message-actions--user" aria-label="Question actions">
-            <button type="button" aria-label="Edit question" title="Edit and resend" disabled={isSending} onClick={() => onEdit(message.content)}>
+            <button
+              type="button"
+              aria-label="Edit question"
+              title="Edit and resend"
+              disabled={isSending}
+              onClick={() => {
+                setDraft(message.content)
+                setIsEditing(true)
+              }}
+            >
               <Pencil size={14} />
             </button>
             <button
@@ -818,8 +1003,10 @@ export function App() {
   const [sessions, setSessions] = useState([])
   const [apiDocuments, setApiDocuments] = useState([])
   const [apiOnline, setApiOnline] = useState(false)
+  const [me, setMe] = useState(null)
   const [isSending, setIsSending] = useState(false)
-  const [toast, setToast] = useState({ text: '', visible: false })
+  const [toast, setToast] = useState({ text: '', kind: 'default', visible: false })
+  const [announcement, setAnnouncement] = useState('')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [atBottom, setAtBottom] = useState(true)
@@ -846,6 +1033,10 @@ export function App() {
   const messagesRef = useRef(null)
   const toastTimer = useRef(null)
   const abortRef = useRef(null)
+  const mobileMenuRef = useRef(null)
+  const sidebarCloseRef = useRef(null)
+  const menuTriggerRef = useRef(null)
+  const prevSidebarOpen = useRef(false)
 
   const documents = apiDocuments.length ? apiDocuments : localDocuments
   const activeDocument = documents.find((doc) => doc.id === activeDoc)
@@ -873,6 +1064,7 @@ export function App() {
 
   useEffect(() => {
     refreshSessions()
+    inputRef.current?.focus()
   }, [])
 
   useEffect(() => {
@@ -894,6 +1086,8 @@ export function App() {
         setSidebarOpen(false)
         setMenuSessionId(null)
         setRenamingSessionId(null)
+        menuTriggerRef.current?.focus()
+        menuTriggerRef.current = null
         return
       }
       if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'o') {
@@ -926,8 +1120,19 @@ export function App() {
     window.localStorage.setItem('insight-copilot-theme', theme)
   }, [theme])
 
+  const wasSending = useRef(false)
+  useEffect(() => {
+    if (isSending) {
+      setAnnouncement('Generating answer')
+    } else if (wasSending.current) {
+      setAnnouncement('Response ready')
+    }
+    wasSending.current = isSending
+  }, [isSending])
+
   useEffect(() => {
     if (!menuSessionId) return
+    document.querySelector('.history-menu button')?.focus()
     function handleClick() {
       setMenuSessionId(null)
     }
@@ -935,8 +1140,17 @@ export function App() {
     return () => window.removeEventListener('click', handleClick)
   }, [menuSessionId])
 
-  function showToast(text) {
-    setToast({ text, visible: true })
+  useEffect(() => {
+    if (sidebarOpen) {
+      sidebarCloseRef.current?.focus()
+    } else if (prevSidebarOpen.current) {
+      mobileMenuRef.current?.focus()
+    }
+    prevSidebarOpen.current = sidebarOpen
+  }, [sidebarOpen])
+
+  function showToast(text, kind = 'default') {
+    setToast({ text, kind, visible: true })
     window.clearTimeout(toastTimer.current)
     toastTimer.current = window.setTimeout(() => setToast((current) => ({ ...current, visible: false })), 1800)
   }
@@ -961,12 +1175,18 @@ export function App() {
 
   async function refreshSessions() {
     try {
-      const [sessionData, documentData] = await Promise.all([apiFetch('/sessions'), apiFetch('/documents')])
+      const [sessionData, documentData, meData] = await Promise.all([
+        apiFetch('/sessions'),
+        apiFetch('/documents'),
+        apiFetch('/me').catch(() => null),
+      ])
       setSessions(sessionData)
       setApiDocuments(documentData)
+      setMe(meData)
       setApiOnline(true)
     } catch {
       setApiOnline(false)
+      setMe(null)
     }
   }
 
@@ -1015,7 +1235,7 @@ export function App() {
       setSessions((current) => current.map((session) => (session.id === targetSessionId ? { ...session, title } : session)))
       showToast('Chat renamed')
     } catch {
-      showToast('Could not rename chat')
+      showToast('Could not rename chat', 'error')
     }
   }
 
@@ -1029,7 +1249,7 @@ export function App() {
       if (targetSessionId === sessionId) startNewChat()
       showToast('Chat deleted')
     } catch {
-      showToast('Could not delete chat')
+      showToast('Could not delete chat', 'error')
     }
   }
 
@@ -1219,7 +1439,7 @@ export function App() {
   }
 
   async function submitQuestion(questionText = input) {
-    const question = questionText.trim()
+    const question = questionText.trim().slice(0, MAX_QUESTION_LENGTH)
     if (!question || isSending) return
 
     const time = new Intl.DateTimeFormat([], { hour: '2-digit', minute: '2-digit' }).format(new Date())
@@ -1313,7 +1533,7 @@ export function App() {
       updateMessage(message.id, { feedback: rating })
       showToast('Feedback sent')
     } catch {
-      showToast('Could not send feedback')
+      showToast('Could not send feedback', 'error')
     }
   }
 
@@ -1325,7 +1545,7 @@ export function App() {
       await navigator.clipboard?.writeText(shareUrl)
       showToast('Share link copied')
     } catch {
-      showToast('Could not create share link')
+      showToast('Could not create share link', 'error')
     }
   }
 
@@ -1333,7 +1553,7 @@ export function App() {
     if (!sessionId) return
     const response = await fetch(`${API_BASE_URL}/sessions/${sessionId}/export.txt`)
     if (!response.ok) {
-      showToast('Could not download transcript')
+      showToast('Could not download transcript', 'error')
       return
     }
     const text = await response.text()
@@ -1359,7 +1579,7 @@ export function App() {
       setSessionId(data.session_id)
       await loadSession(data.session_id)
     } catch {
-      showToast('Could not retry this message')
+      showToast('Could not retry this message', 'error')
     } finally {
       setIsSending(false)
     }
@@ -1372,7 +1592,9 @@ export function App() {
         <input
           key={session.id}
           className="history-rename"
+          aria-label="Rename chat"
           value={renameValue}
+          maxLength={MAX_TITLE_LENGTH}
           autoFocus
           onFocus={(event) => event.currentTarget.select()}
           onChange={(event) => setRenameValue(event.target.value)}
@@ -1388,36 +1610,60 @@ export function App() {
     }
     return (
       <div className={`history-row ${session.id === sessionId ? 'is-active' : ''}`} key={session.id}>
-        <button type="button" className="history-row__open" onClick={() => loadSession(session.id)}>
+        <button
+          type="button"
+          className="history-row__open"
+          aria-current={session.id === sessionId ? 'true' : undefined}
+          onClick={() => loadSession(session.id)}
+        >
           <span className="history-title">
             {isPinned ? <Pin size={12} /> : null}
             <span className="history-title__text">{session.title}</span>
           </span>
-          <small>{session.message_count} messages</small>
+          <small>
+            {session.message_count} messages
+            {relativeTime(session.updated_at ?? session.created_at) ? ` · ${relativeTime(session.updated_at ?? session.created_at)}` : ''}
+          </small>
         </button>
         <button
           type="button"
           className="history-row__menu"
-          aria-label="Chat options"
+          aria-label={`Options for ${session.title}`}
+          aria-haspopup="menu"
           aria-expanded={menuSessionId === session.id}
           onClick={(event) => {
             event.stopPropagation()
+            menuTriggerRef.current = event.currentTarget
             setMenuSessionId(menuSessionId === session.id ? null : session.id)
           }}
         >
           <MoreHorizontal size={16} />
         </button>
         {menuSessionId === session.id ? (
-          <div className="history-menu" onClick={(event) => event.stopPropagation()}>
-            <button type="button" onClick={() => togglePin(session.id)}>
+          <div
+            className="history-menu"
+            role="menu"
+            aria-label={`Options for ${session.title}`}
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+              event.preventDefault()
+              const items = [...event.currentTarget.querySelectorAll('button')]
+              const index = items.indexOf(document.activeElement)
+              const nextIndex =
+                event.key === 'ArrowDown' ? (index + 1) % items.length : (index - 1 + items.length) % items.length
+              items[nextIndex]?.focus()
+            }}
+          >
+            <button type="button" role="menuitem" onClick={() => togglePin(session.id)}>
               {isPinned ? <PinOff size={14} /> : <Pin size={14} />}
               {isPinned ? 'Unpin' : 'Pin'}
             </button>
-            <button type="button" onClick={() => startRenaming(session)}>
+            <button type="button" role="menuitem" onClick={() => startRenaming(session)}>
               <Pencil size={14} />
               Rename
             </button>
-            <button type="button" className="is-danger" onClick={() => deleteSession(session.id)}>
+            <button type="button" role="menuitem" className="is-danger" onClick={() => deleteSession(session.id)}>
               <Trash2 size={14} />
               Delete
             </button>
@@ -1429,7 +1675,10 @@ export function App() {
 
   return (
     <div className={`app-shell ${sidebarCollapsed ? 'is-sidebar-collapsed' : ''}`}>
-      <aside className={`sidebar ${sidebarOpen ? 'is-open' : ''}`}>
+      <a className="skip-link" href="#composer-input">
+        Skip to question input
+      </a>
+      <aside className={`sidebar ${sidebarOpen ? 'is-open' : ''}`} aria-label="Chat history">
         <div className="sidebar__top">
           <div className="sidebar-brand">
             <img src={logoUrl} alt="" />
@@ -1439,7 +1688,7 @@ export function App() {
             <SquarePen size={17} />
             New chat
           </button>
-          <button className="icon-button sidebar-close" type="button" aria-label="Close sidebar" onClick={() => setSidebarOpen(false)}>
+          <button ref={sidebarCloseRef} className="icon-button sidebar-close" type="button" aria-label="Close sidebar" onClick={() => setSidebarOpen(false)}>
             <ChevronLeft size={19} />
           </button>
           {sessions.length ? (
@@ -1448,6 +1697,7 @@ export function App() {
               <input
                 type="search"
                 value={historyQuery}
+                maxLength={120}
                 placeholder="Search chats"
                 aria-label="Search chats"
                 onChange={(event) => setHistoryQuery(event.target.value)}
@@ -1485,16 +1735,48 @@ export function App() {
         </div>
 
         <div className="sidebar__foot">
-          <span className={`connection ${apiOnline ? 'is-online' : ''}`}>
-            <Check size={14} />
-            {apiOnline ? 'API online' : 'Local preview'}
-          </span>
+          {me?.email ? (
+            <div className="user-badge">
+              <span className="user-badge__avatar" aria-hidden="true">
+                {(firstNameFrom(me) || me.email).charAt(0).toUpperCase()}
+              </span>
+              <div className="user-badge__meta">
+                <span className="user-badge__email">{me.email}</span>
+                {Number.isFinite(me.question_quota?.limit) && me.question_quota.limit !== null ? (
+                  <>
+                    <span className="user-badge__quota">
+                      {me.question_quota.used} of {me.question_quota.limit} questions used
+                    </span>
+                    <span className="quota-bar" aria-hidden="true">
+                      <span
+                        style={{
+                          width: `${Math.min(100, Math.round((me.question_quota.used / Math.max(1, me.question_quota.limit)) * 100))}%`,
+                        }}
+                      />
+                    </span>
+                  </>
+                ) : null}
+              </div>
+              <span
+                className={`status-dot ${apiOnline ? 'is-online' : ''}`}
+                role="status"
+                title={apiOnline ? 'API online' : 'API offline'}
+                aria-label={apiOnline ? 'API online' : 'API offline'}
+              />
+            </div>
+          ) : (
+            <span className={`connection ${apiOnline ? 'is-online' : ''}`}>
+              <Check size={14} />
+              {apiOnline ? 'API online' : 'Local preview'}
+            </span>
+          )}
         </div>
       </aside>
       {sidebarOpen ? <div className="sidebar-backdrop" aria-hidden="true" onClick={() => setSidebarOpen(false)} /> : null}
       <button
         className="sidebar-edge-toggle"
         type="button"
+        aria-expanded={!sidebarCollapsed}
         aria-label={sidebarCollapsed ? 'Open history' : 'Close history'}
         onClick={() => setSidebarCollapsed((value) => !value)}
       >
@@ -1504,6 +1786,7 @@ export function App() {
       <main className="chat-shell">
         <header className="topbar">
           <button
+            ref={mobileMenuRef}
             className="icon-button mobile-menu"
             type="button"
             aria-label="Open sidebar"
@@ -1544,7 +1827,9 @@ export function App() {
           <div className="conversation">
             <div
               className="messages"
-              aria-live="polite"
+              role="log"
+              aria-live="off"
+              aria-label="Conversation"
               ref={messagesRef}
               onScroll={(event) => {
                 const el = event.currentTarget
@@ -1561,10 +1846,7 @@ export function App() {
                     onShare={shareMessage}
                     onDownload={downloadSession}
                     onRetry={retryMessage}
-                    onEdit={(text) => {
-                      setInput(text)
-                      inputRef.current?.focus()
-                    }}
+                    onEdit={(text) => submitQuestion(text)}
                     isSending={isSending}
                   />
                 ))
@@ -1573,7 +1855,10 @@ export function App() {
                   <div className="empty-chat__mark">
                     <img src={logoUrl} alt="" />
                   </div>
-                  <h1>{timeGreeting()}</h1>
+                  <h1>
+                    {timeGreeting()}
+                    {firstNameFrom(me) ? `, ${firstNameFrom(me)}` : ''}
+                  </h1>
                   <p>Ask anything about your indexed documents and videos.</p>
                   <SuggestedQuestions examples={starterExamples} disabled={isSending} onSelect={submitQuestion} />
                 </div>
@@ -1607,7 +1892,19 @@ export function App() {
                 submitQuestion()
               }}
             >
+              {activeDoc !== 'all' && activeDocument ? (
+                <div className="composer__filter">
+                  <span>
+                    Searching in: <strong>{activeDocument.title}</strong>
+                  </span>
+                  <button type="button" aria-label="Clear source filter" title="Search all sources" onClick={() => setActiveDoc('all')}>
+                    <X size={13} />
+                  </button>
+                </div>
+              ) : null}
               <textarea
+                id="composer-input"
+                aria-label="Ask a question"
                 ref={inputRef}
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
@@ -1619,8 +1916,15 @@ export function App() {
                 }}
                 placeholder="Ask a question…"
                 rows={1}
+                maxLength={MAX_QUESTION_LENGTH}
               />
               <div className="composer__controls">
+                <span className="composer__hint">Enter to send · Shift+Enter for a new line</span>
+                {input.length >= MAX_QUESTION_LENGTH - 400 ? (
+                  <span className="composer__count">
+                    {input.length}/{MAX_QUESTION_LENGTH}
+                  </span>
+                ) : null}
                 {isSending ? (
                   <button
                     className="send-button send-button--stop"
@@ -1641,8 +1945,14 @@ export function App() {
           </div>
         </section>
 
-        <div className={`copy-toast ${toast.visible ? 'is-visible' : ''}`} role="status">
+        <div
+          className={`copy-toast copy-toast--${toast.kind} ${toast.visible ? 'is-visible' : ''}`}
+          role={toast.kind === 'error' ? 'alert' : 'status'}
+        >
           {toast.text}
+        </div>
+        <div className="sr-only" aria-live="polite">
+          {announcement}
         </div>
       </main>
     </div>
