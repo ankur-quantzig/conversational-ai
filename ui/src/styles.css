@@ -382,7 +382,7 @@ select:focus-visible {
 .topbar__title {
   display: grid;
   grid-template-columns: auto minmax(0, max-content);
-  gap: 2px 9px;
+  gap: 9px;
   align-items: center;
   justify-self: start;
   max-width: 100%;
@@ -392,12 +392,14 @@ select:focus-visible {
 .topbar__title img {
   width: 30px;
   height: 30px;
-  grid-row: 1 / span 2;
   object-fit: contain;
 }
 
 .topbar__title strong {
   font-size: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .topbar__title span {

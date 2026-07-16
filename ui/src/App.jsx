@@ -43,6 +43,7 @@ const starterExamples = [
 ]
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api'
+const APP_NAME = 'Shell Conversational AI'
 const MAX_QUESTION_LENGTH = 4000
 const MAX_TITLE_LENGTH = 200
 const UNABLE_TO_GENERATE_MESSAGE = 'I am unable to generate the response at the moment. Please contact Admin.'
@@ -1698,7 +1699,7 @@ export function App() {
         <div className="sidebar__top">
           <div className="sidebar-brand">
             <img src={logoUrl} alt="" />
-            <span>Insight Copilot</span>
+            <span>{APP_NAME}</span>
           </div>
           <button className="new-chat" type="button" onClick={startNewChat}>
             <SquarePen size={17} />
@@ -1815,8 +1816,7 @@ export function App() {
           </button>
           <div className="topbar__title">
             <img src={logoUrl} alt="" />
-            <strong>Insight Copilot</strong>
-            {activeDocument ? <span>{activeDocument.title}</span> : null}
+            <strong>{APP_NAME}</strong>
           </div>
           <div className="topbar__actions">
             <button
