@@ -750,23 +750,25 @@ function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry
     },
   }
 
+  const showStatusRow = !isUser && stageLabel && (message.pending || message.status === 'error')
+
   return (
     <article
       className={`message ${isUser ? 'message--user' : 'message--assistant'}`}
       aria-busy={!isUser && message.pending ? true : undefined}
     >
-      <div className="avatar" aria-hidden="true">
-        <Icon size={17} />
-      </div>
-      <div className="message__content">
-        <div className="message__top">
-          <strong>{isUser ? 'Question' : 'Agent'}</strong>
-          {!isUser && stageLabel ? <span className={`stage-pill stage-pill--${message.status}`}>{stageLabel}</span> : null}
-          {!isUser && message.elapsedMs ? <span className="response-time">{formatElapsed(message.elapsedMs)}</span> : null}
-          {message.time ? <time>{message.time}</time> : null}
+      {!isUser ? (
+        <div className="avatar" aria-hidden="true">
+          <Icon size={17} />
         </div>
-        {!isUser && message.heading && !message.pending ? <h2 className="response-heading">{message.heading}</h2> : null}
-        {!isUser && message.progressSteps?.length && message.pending ? <AgentRunTimeline steps={message.progressSteps} activeStatus={message.status} /> : null}
+      ) : null}
+      <div className="message__stack">
+        {showStatusRow ? (
+          <div className="message__top">
+            <span className={`stage-pill stage-pill--${message.status}`}>{stageLabel}</span>
+            {message.elapsedMs ? <span className="response-time">{formatElapsed(message.elapsedMs)}</span> : null}
+          </div>
+        ) : null}
         {isUser && isEditing ? (
           <div className="message-edit">
             <textarea
@@ -796,120 +798,134 @@ function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry
               </button>
             </div>
           </div>
-        ) : message.content ? (
-          <CitationContext.Provider value={citationContext}>
-            <StructuredContent text={message.content}>
-              {!isUser && message.pending ? <span className="stream-caret" aria-hidden="true" /> : null}
-              <CitationList items={citations} openSource={openSource} onToggle={toggleSource} />
-            </StructuredContent>
-          </CitationContext.Provider>
-        ) : !isUser && message.pending ? (
-          <div className="typing-indicator" role="status" aria-label="Agent is responding">
-            <span />
-            <span />
-            <span />
-          </div>
-        ) : null}
-        {!isUser && message.diagram?.should_show ? <ResponseDiagram diagram={message.diagram} /> : null}
-        {activeCitation ? (
-          <SourceChunk
-            source={activeCitation.source}
-            citation={activeCitation.citation}
-            index={openSource}
-            onClose={() => setOpenSource(null)}
-          />
-        ) : null}
-        {showSources ? (
-          <div className="source-stack">
-            <div className="source-stack__top">
-              <span>Sources</span>
-              <button type="button" aria-label="Close sources" onClick={() => setShowSources(false)}>
-                <X size={15} />
-              </button>
-            </div>
-            {citations.map((item, index) => (
-              <SourceChunk key={`${item.source?.id ?? 'source'}-all-${index}`} source={item.source} citation={item.citation} index={index} />
-            ))}
-          </div>
-        ) : null}
-        {!isUser ? (
-          <div className="message-actions" aria-label="Message actions">
-            <button
-              type="button"
-              aria-label="Copy response"
-              title="Copy response"
-              disabled={actionsDisabled}
-              onClick={async () => {
-                await onCopy(message.content)
-                setJustCopied(true)
-                window.setTimeout(() => setJustCopied(false), 1400)
-              }}
-            >
-              {justCopied ? <Check size={15} /> : <Copy size={15} />}
-            </button>
-            <button type="button" aria-label="Share response" title="Share response" disabled={actionsDisabled || !message.id} onClick={() => onShare(message)}>
-              <Share2 size={15} />
-            </button>
-            <button type="button" aria-label="Download conversation" title="Download conversation" disabled={message.pending} onClick={() => onDownload()}>
-              <Download size={15} />
-            </button>
-            <button
-              type="button"
-              className={message.feedback === 'up' ? 'is-selected' : ''}
-              aria-label="Good response"
-              aria-pressed={message.feedback === 'up'}
-              title="Good response"
-              disabled={actionsDisabled || !message.id}
-              onClick={() => onFeedback(message, 'up')}
-            >
-              <ThumbsUp size={15} />
-            </button>
-            <button
-              type="button"
-              className={message.feedback === 'down' ? 'is-selected' : ''}
-              aria-label="Bad response"
-              aria-pressed={message.feedback === 'down'}
-              title="Bad response"
-              disabled={actionsDisabled || !message.id}
-              onClick={() => onFeedback(message, 'down')}
-            >
-              <ThumbsDown size={15} />
-            </button>
-            <button type="button" aria-label="Try again" title="Try again" disabled={actionsDisabled || !message.id || isSending} onClick={() => onRetry(message)}>
-              <RotateCcw size={15} />
-            </button>
-            <button type="button" aria-label="Show sources" title="Show sources" disabled={actionsDisabled || !citations.length} onClick={() => setShowSources((value) => !value)}>
-              <BookOpen size={15} />
-            </button>
-          </div>
         ) : (
-          <div className="message-actions message-actions--user" aria-label="Question actions">
-            <button
-              type="button"
-              aria-label="Edit question"
-              title="Edit and resend"
-              disabled={isSending}
-              onClick={() => {
-                setDraft(message.content)
-                setIsEditing(true)
-              }}
-            >
-              <Pencil size={14} />
-            </button>
-            <button
-              type="button"
-              aria-label="Copy question"
-              title="Copy question"
-              onClick={async () => {
-                await onCopy(message.content)
-                setJustCopied(true)
-                window.setTimeout(() => setJustCopied(false), 1400)
-              }}
-            >
-              {justCopied ? <Check size={14} /> : <Copy size={14} />}
-            </button>
+          <div className={`bubble ${isUser ? 'bubble--user' : 'bubble--assistant'}`}>
+            {!isUser && message.heading && !message.pending ? <h2 className="response-heading">{message.heading}</h2> : null}
+            {!isUser && message.progressSteps?.length && message.pending ? <AgentRunTimeline steps={message.progressSteps} activeStatus={message.status} /> : null}
+            {message.content ? (
+              <CitationContext.Provider value={citationContext}>
+                <StructuredContent text={message.content}>
+                  {!isUser && message.pending ? <span className="stream-caret" aria-hidden="true" /> : null}
+                  <CitationList items={citations} openSource={openSource} onToggle={toggleSource} />
+                </StructuredContent>
+              </CitationContext.Provider>
+            ) : !isUser && message.pending ? (
+              <div className="typing-indicator" role="status" aria-label="Agent is responding">
+                <span />
+                <span />
+                <span />
+              </div>
+            ) : null}
+            {!isUser && message.diagram?.should_show ? <ResponseDiagram diagram={message.diagram} /> : null}
+            {activeCitation ? (
+              <SourceChunk
+                source={activeCitation.source}
+                citation={activeCitation.citation}
+                index={openSource}
+                onClose={() => setOpenSource(null)}
+              />
+            ) : null}
+            {showSources ? (
+              <div className="source-stack">
+                <div className="source-stack__top">
+                  <span>Sources</span>
+                  <button type="button" aria-label="Close sources" onClick={() => setShowSources(false)}>
+                    <X size={15} />
+                  </button>
+                </div>
+                {citations.map((item, index) => (
+                  <SourceChunk key={`${item.source?.id ?? 'source'}-all-${index}`} source={item.source} citation={item.citation} index={index} />
+                ))}
+              </div>
+            ) : null}
           </div>
         )}
+        {!isUser && !message.pending ? (
+          <div className="message__meta">
+            <div className="message-actions" aria-label="Message actions">
+              <button
+                type="button"
+                aria-label="Copy response"
+                title="Copy response"
+                disabled={actionsDisabled}
+                onClick={async () => {
+                  await onCopy(message.content)
+                  setJustCopied(true)
+                  window.setTimeout(() => setJustCopied(false), 1400)
+                }}
+              >
+                {justCopied ? <Check size={15} /> : <Copy size={15} />}
+              </button>
+              <button type="button" aria-label="Share response" title="Share response" disabled={actionsDisabled || !message.id} onClick={() => onShare(message)}>
+                <Share2 size={15} />
+              </button>
+              <button type="button" aria-label="Download conversation" title="Download conversation" disabled={message.pending} onClick={() => onDownload()}>
+                <Download size={15} />
+              </button>
+              <button
+                type="button"
+                className={message.feedback === 'up' ? 'is-selected' : ''}
+                aria-label="Good response"
+                aria-pressed={message.feedback === 'up'}
+                title="Good response"
+                disabled={actionsDisabled || !message.id}
+                onClick={() => onFeedback(message, 'up')}
+              >
+                <ThumbsUp size={15} />
+              </button>
+              <button
+                type="button"
+                className={message.feedback === 'down' ? 'is-selected' : ''}
+                aria-label="Bad response"
+                aria-pressed={message.feedback === 'down'}
+                title="Bad response"
+                disabled={actionsDisabled || !message.id}
+                onClick={() => onFeedback(message, 'down')}
+              >
+                <ThumbsDown size={15} />
+              </button>
+              <button type="button" aria-label="Try again" title="Try again" disabled={actionsDisabled || !message.id || isSending} onClick={() => onRetry(message)}>
+                <RotateCcw size={15} />
+              </button>
+              <button type="button" aria-label="Show sources" title="Show sources" disabled={actionsDisabled || !citations.length} onClick={() => setShowSources((value) => !value)}>
+                <BookOpen size={15} />
+              </button>
+            </div>
+            {message.elapsedMs ? <span className="response-time">{formatElapsed(message.elapsedMs)}</span> : null}
+            {message.time ? <time>{message.time}</time> : null}
+          </div>
+        ) : null}
+        {isUser && !isEditing ? (
+          <div className="message__meta">
+            <div className="message-actions message-actions--user" aria-label="Question actions">
+              <button
+                type="button"
+                aria-label="Edit question"
+                title="Edit and resend"
+                disabled={isSending}
+                onClick={() => {
+                  setDraft(message.content)
+                  setIsEditing(true)
+                }}
+              >
+                <Pencil size={14} />
+              </button>
+              <button
+                type="button"
+                aria-label="Copy question"
+                title="Copy question"
+                onClick={async () => {
+                  await onCopy(message.content)
+                  setJustCopied(true)
+                  window.setTimeout(() => setJustCopied(false), 1400)
+                }}
+              >
+                {justCopied ? <Check size={14} /> : <Copy size={14} />}
+              </button>
+            </div>
+            {message.time ? <time>{message.time}</time> : null}
+          </div>
+        ) : null}
       </div>
     </article>
   )
