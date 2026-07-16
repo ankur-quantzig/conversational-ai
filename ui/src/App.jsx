@@ -120,7 +120,7 @@ function formatApiMessage(message) {
     sources: metadata.sources ?? [],
     citations: metadata.citations ?? [],
     followUpQuestions: metadata.follow_up_questions ?? [],
-    diagram: metadata.diagram ?? null,
+    diagram: null,
     questionAnalysis: metadata.question_analysis ?? null,
     elapsedMs: metadata.elapsed_ms ?? null,
     status: message.role === 'assistant' ? 'final_response' : undefined,
@@ -717,7 +717,6 @@ function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry
     reranking_chunks: 'Reranking',
     generating_answer: 'Generating',
     creating_followups: 'Follow-ups',
-    diagram_check: 'Diagram',
     saving_conversation: 'Saving',
     complete: 'Complete',
     writing: 'Writing',
@@ -810,7 +809,6 @@ function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry
                 <span />
               </div>
             ) : null}
-            {!isUser && message.diagram?.should_show ? <ResponseDiagram diagram={message.diagram} /> : null}
             {activeCitation ? (
               <SourceChunk
                 source={activeCitation.source}
@@ -1339,7 +1337,7 @@ export function App() {
       sources: data.sources ?? [],
       citations: data.citations ?? [],
       followUpQuestions: data.follow_up_questions ?? [],
-      diagram: data.diagram ?? null,
+      diagram: null,
       questionAnalysis: data.question_analysis ?? null,
       elapsedMs,
       status: 'final_response',
@@ -1403,7 +1401,7 @@ export function App() {
           sources: data.sources ?? [],
           citations: data.citations ?? [],
           followUpQuestions: data.follow_up_questions ?? [],
-          diagram: data.diagram ?? null,
+          diagram: null,
           questionAnalysis: data.question_analysis ?? null,
           elapsedMs,
           status: 'final_response',

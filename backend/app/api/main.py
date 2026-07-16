@@ -33,7 +33,7 @@ from app.config import (
 )
 from app.clients.lancedb_store import DEFAULT_TABLE_NAME, open_table
 from app.db.postgres import get_connection, init_db, wait_for_database
-from app.rag.answer import generate_follow_up_questions, generate_response_diagram, plan_conversation_question
+from app.rag.answer import generate_follow_up_questions, plan_conversation_question
 from app.security.audit import log_audit_event
 from app.security.auth import UserContext, current_user, ensure_document_access, require_role
 from app.security.guardrails import QuerySecurityResult, classify_query
@@ -153,12 +153,7 @@ def safe_follow_up_questions(question: str, answer: str, sources: list[dict[str,
 
 
 def safe_response_diagram(question: str, answer: str, sources: list[dict[str, Any]]) -> dict[str, Any]:
-    try:
-        diagram = generate_response_diagram(question=question, answer=answer, results=sources)
-        payload = diagram.model_dump()
-        return payload if payload.get("should_show") else {}
-    except Exception:
-        return {}
+    return {}
 
 
 def conversation_history(session_id: str | None, user: UserContext, limit: int = 8) -> list[dict[str, Any]]:
@@ -512,7 +507,7 @@ def chat(chat_request: ChatRequest, request: Request, user: UserContext = Depend
     sources = rag_response["sources"]
     heading = rag_response.get("heading", "")
     follow_up_questions = safe_follow_up_questions(question=effective_question, answer=answer, sources=sources)
-    diagram = safe_response_diagram(question=effective_question, answer=answer, sources=sources)
+    diagram = {}
     elapsed_ms = elapsed_ms_since(started_at)
 
     assistant_message_id = persist_chat_turn(
@@ -684,8 +679,7 @@ def chat_stream(chat_request: ChatRequest, request: Request, user: UserContext =
                 time.sleep(0.025)
             yield sse_event("progress", {"stage": "creating_followups", "message": "Creating follow-up questions", "metadata": {}, "request_id": request_id})
             follow_up_questions = safe_follow_up_questions(question=effective_question, answer=answer, sources=sources)
-            yield sse_event("progress", {"stage": "diagram_check", "message": "Checking if a diagram helps", "metadata": {}, "request_id": request_id})
-            diagram = safe_response_diagram(question=effective_question, answer=answer, sources=sources)
+            diagram = {}
             elapsed_ms = elapsed_ms_since(started_at)
 
             yield sse_event("progress", {"stage": "saving_conversation", "message": "Saving conversation", "metadata": {}, "request_id": request_id})
