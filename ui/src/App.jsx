@@ -1863,7 +1863,7 @@ export function App() {
                     <img src={logoUrl} alt="" />
                   </div>
                   <h1>{APP_NAME}</h1>
-                  <p>Ask anything about your indexed documents and videos.</p>
+                  <p>Talk to the  documents and videos and generate insights</p>
                   <SuggestedQuestions examples={starterExamples} disabled={isSending} onSelect={submitQuestion} />
                 </div>
               )}
