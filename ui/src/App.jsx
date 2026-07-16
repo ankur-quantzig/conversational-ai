@@ -257,13 +257,6 @@ function sessionBucket(session) {
   return 'Older'
 }
 
-function timeGreeting() {
-  const hour = new Date().getHours()
-  if (hour < 12) return 'Good morning'
-  if (hour < 17) return 'Good afternoon'
-  return 'Good evening'
-}
-
 function relativeTime(value) {
   const date = value ? new Date(value) : null
   if (!date || Number.isNaN(date.getTime())) return ''
@@ -1871,10 +1864,7 @@ export function App() {
                   <div className="empty-chat__mark">
                     <img src={logoUrl} alt="" />
                   </div>
-                  <h1>
-                    {timeGreeting()}
-                    {firstNameFrom(me) ? `, ${firstNameFrom(me)}` : ''}
-                  </h1>
+                  <h1>{APP_NAME}</h1>
                   <p>Ask anything about your indexed documents and videos.</p>
                   <SuggestedQuestions examples={starterExamples} disabled={isSending} onSelect={submitQuestion} />
                 </div>
