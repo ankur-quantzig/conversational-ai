@@ -470,42 +470,70 @@ select {
 }
 
 .message {
-  display: grid;
-  grid-template-columns: 36px minmax(0, 760px);
-  justify-content: center;
-  gap: 16px;
+  display: flex;
+  gap: 10px;
   width: 100%;
-  padding: 18px 24px;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 6px 24px;
 }
 
-.message--assistant {
-  background: var(--surface-2);
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
+.message--user {
+  justify-content: flex-end;
 }
 
 .avatar {
   display: grid;
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
   place-items: center;
+  margin-top: 2px;
   border: 1px solid #bfded6;
-  border-radius: 10px;
+  border-radius: 999px;
   background: #ecfdf7;
   color: #08745b;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
 }
 
-.message--user .avatar {
-  border-color: #cbd5e1;
-  background: #f8fafc;
-  color: #334155;
-}
-
-.message__content {
-  position: relative;
+.message__stack {
+  display: grid;
+  gap: 5px;
   min-width: 0;
-  padding-right: 38px;
+}
+
+.message--assistant .message__stack {
+  flex: 1 1 auto;
+  max-width: calc(100% - 42px);
+  justify-items: start;
+}
+
+.message--user .message__stack {
+  max-width: min(78%, 620px);
+  justify-items: end;
+}
+
+.bubble {
+  min-width: 0;
+  max-width: 100%;
+  border-radius: 18px;
+  padding: 11px 15px;
+}
+
+.bubble--assistant {
+  border: 1px solid var(--line);
+  border-bottom-left-radius: 6px;
+  background: var(--surface-2);
+}
+
+.bubble--user {
+  border-bottom-right-radius: 6px;
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.bubble--user .structured-content p,
+.bubble--user .structured-content li {
+  color: #ffffff;
 }
 
 .message__top {
@@ -513,16 +541,25 @@ select {
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
-  margin-bottom: 7px;
 }
 
-.message__top strong {
-  font-size: 14px;
-}
-
-.message__top time {
+.message__meta {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
   color: var(--muted);
-  font-size: 12px;
+  padding: 0 4px;
+  font-size: 11px;
+}
+
+.message__meta time {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.message__meta .response-time {
+  font-size: 11px;
 }
 
 .stage-pill {
@@ -951,7 +988,6 @@ select {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-top: 12px;
 }
 
 .message-actions button {
@@ -1316,8 +1352,11 @@ textarea:disabled {
   }
 
   .message {
-    grid-template-columns: 36px minmax(0, 1fr);
-    padding: 16px;
+    padding: 5px 14px;
+  }
+
+  .message--user .message__stack {
+    max-width: 86%;
   }
 
   .prompt-grid {
