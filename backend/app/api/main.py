@@ -1071,13 +1071,21 @@ def video_clip_source(
 
 
 class SinglePageApp(StaticFiles):
+    def is_not_modified(self, response_headers, request_headers) -> bool:
+        return False
+
     async def get_response(self, path: str, scope):
         try:
-            return await super().get_response(path, scope)
+            response = await super().get_response(path, scope)
         except StarletteHTTPException as exc:
             if exc.status_code == 404:
-                return await super().get_response("index.html", scope)
-            raise
+                response = await super().get_response("index.html", scope)
+            else:
+                raise
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
 
 
 dist_dir = project_root() / "ui" / "dist"

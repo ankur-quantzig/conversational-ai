@@ -178,7 +178,13 @@ def ensure_lancedb_index() -> None:
 
 def ensure_frontend() -> None:
     ui_root = ROOT / "ui"
-    if (ui_root / "dist" / "index.html").exists():
+    dist_dir = ui_root / "dist"
+    force_build = os.getenv("APP_ENV", "").lower() == "databricks" or os.getenv("FORCE_FRONTEND_BUILD") == "1"
+    if dist_dir.exists() and force_build:
+        print(f"Removing existing frontend build at {dist_dir} before rebuilding from source...")
+        shutil.rmtree(dist_dir)
+
+    if (dist_dir / "index.html").exists():
         print("Frontend build already exists.")
         return
 
