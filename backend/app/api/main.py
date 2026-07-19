@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
 import subprocess
 import threading
@@ -45,10 +46,16 @@ from app.security.auth import UserContext, current_user, ensure_document_access,
 from app.security.guardrails import QuerySecurityResult, classify_query
 from app.security.quota import enforce_question_quota, question_limit_for, questions_used
 from app.security.rate_limit import enforce_rate_limit
-from app.utils.files import project_root
+from app.utils.files import data_root, output_dir, project_root
 
 
 UNABLE_TO_GENERATE_MESSAGE = "I am unable to generate the response at the moment. Please contact Admin."
+VIDEO_MEDIA_TYPES = {
+    ".m4v": "video/mp4",
+    ".mov": "video/quicktime",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+}
 
 
 class ChatRequest(BaseModel):
@@ -1100,31 +1107,91 @@ def find_previous_user_question(session_id: str, before_created_at: Any) -> str:
     return row["content"]
 
 
-def indexed_video_path(doc_id: str) -> Path:
-    allowed_extensions = {".mp4", ".mov", ".m4v", ".webm"}
-    workspace_root = project_root()
-    allowed_roots = [
-        (workspace_root / "data").resolve(),
-        (workspace_root / "output").resolve(),
-        (workspace_root / "deploy" / "databricks" / "artifacts" / "video_sources").resolve(),
+def configured_video_roots() -> list[Path]:
+    roots = [
+        data_root(),
+        output_dir(),
+        project_root() / "data",
+        project_root() / "output",
+        project_root() / "deploy" / "databricks" / "artifacts" / "video_sources",
+        project_root() / "deploy" / "databricks" / "artifacts" / "output",
     ]
+    for env_name in ("DATABRICKS_DATA_VOLUME", "DATABRICKS_OUTPUT_VOLUME", "INSIGHT_DATA_ROOT", "INSIGHT_OUTPUT_ROOT", "DATA_ROOT", "OUTPUT_ROOT"):
+        value = os.getenv(env_name)
+        if value and "<" not in value:
+            roots.append(Path(value))
+
+    resolved_roots = []
+    seen = set()
+    for root in roots:
+        try:
+            resolved = root.expanduser().resolve()
+        except Exception:
+            continue
+        if "<" in str(resolved) or str(resolved) in seen:
+            continue
+        seen.add(str(resolved))
+        resolved_roots.append(resolved)
+    return resolved_roots
+
+
+def is_path_under_roots(path: Path, roots: list[Path]) -> bool:
+    try:
+        resolved = path.expanduser().resolve()
+    except Exception:
+        return False
+    return any(resolved == root or root in resolved.parents for root in roots)
+
+
+def candidate_video_paths(raw_path: str, allowed_roots: list[Path]) -> list[Path]:
+    source_path = Path(raw_path).expanduser()
+    candidates = [source_path]
+    if not source_path.is_absolute():
+        candidates.append(project_root() / source_path)
+        for root in allowed_roots:
+            candidates.append(root / source_path)
+
+    filename = source_path.name
+    for root in allowed_roots:
+        candidates.extend(
+            [
+                root / filename,
+                root / "new_data" / filename,
+                root / "uploads" / filename,
+                root / "videos" / filename,
+            ]
+        )
+
+    deduped = []
+    seen = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.expanduser().resolve()
+        except Exception:
+            continue
+        if str(resolved) in seen:
+            continue
+        seen.add(str(resolved))
+        deduped.append(resolved)
+    return deduped
+
+
+def indexed_video_path(doc_id: str) -> Path:
+    allowed_roots = configured_video_roots()
     for chunk in load_chunks():
         if chunk.get("doc_id") != doc_id:
             continue
-        source_type = chunk.get("source_type") or chunk.get("metadata", {}).get("source_type")
+        source_type = str(chunk.get("source_type") or chunk.get("metadata", {}).get("source_type") or "").lower()
         if source_type != "video":
             continue
         raw_path = chunk.get("source_path") or chunk.get("source_pdf") or chunk.get("metadata", {}).get("source_path")
         if not raw_path:
             continue
-        candidates = [Path(raw_path), workspace_root / raw_path]
-        candidates.extend(root / Path(raw_path).name for root in allowed_roots)
-        for candidate in candidates:
-            if not candidate.exists() or candidate.suffix.lower() not in allowed_extensions:
+        for candidate in candidate_video_paths(str(raw_path), allowed_roots):
+            if not candidate.exists() or candidate.suffix.lower() not in VIDEO_MEDIA_TYPES:
                 continue
-            resolved = candidate.resolve()
-            if any(resolved == root or root in resolved.parents for root in allowed_roots):
-                return resolved
+            if is_path_under_roots(candidate, allowed_roots):
+                return candidate
     raise HTTPException(status_code=404, detail="Video source not found")
 
 
@@ -1132,7 +1199,7 @@ def indexed_video_path(doc_id: str) -> Path:
 def video_source(doc_id: str, user: UserContext = Depends(current_user)) -> FileResponse:
     ensure_document_access(user, doc_id)
     path = indexed_video_path(doc_id)
-    return FileResponse(path, media_type="video/mp4", filename=path.name)
+    return FileResponse(path, media_type=VIDEO_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream"), filename=path.name)
 
 
 def clip_cache_path(doc_id: str, start: float, end: float) -> Path:

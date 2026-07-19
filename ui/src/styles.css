@@ -950,6 +950,16 @@ select {
   background: #000;
 }
 
+.video-clip__error {
+  border: 1px solid #f0c9c9;
+  border-radius: 7px;
+  background: #fff6f6;
+  color: #8a1f1f;
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 8px 10px;
+}
+
 .source-chunk h3 {
   margin: 0;
   font-size: 14px;
@@ -1637,6 +1647,12 @@ textarea:disabled {
 [data-theme="dark"] .source-chunk blockquote,
 [data-theme="dark"] .source-chunk p {
   color: #b9c0ca;
+}
+
+[data-theme="dark"] .video-clip__error {
+  border-color: #7f1d1d;
+  background: #2a1416;
+  color: #fecaca;
 }
 
 [data-theme="dark"] .source-card__meta strong {

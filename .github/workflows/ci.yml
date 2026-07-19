@@ -163,6 +163,7 @@ jobs:
           python tests/tmp_normalize_check.py
           python tests/quality_enrichment_smoke.py
           python tests/question_preparation_smoke.py
+          python tests/video_source_resolution_smoke.py
 
   frontend:
     name: UI production build

@@ -179,7 +179,7 @@ function sourceName(source = {}) {
 }
 
 function citationLocations(source, citation, index) {
-  const isVideo = source.source_type === 'video'
+  const isVideo = isVideoSource(source)
   const timeLabel =
     source.start_time_label && source.end_time_label
       ? `${source.start_time_label} - ${source.end_time_label}`
@@ -190,34 +190,43 @@ function citationLocations(source, citation, index) {
   return [`source ${index + 1}`]
 }
 
+function isVideoSource(source = {}) {
+  return String(source.source_type ?? source.metadata?.source_type ?? '').toLowerCase() === 'video'
+}
+
 function numericTime(value) {
   const number = Number(value)
-  return Number.isFinite(number) ? number : null
+  return Number.isFinite(number) && number >= 0 ? number : null
 }
 
 function VideoClipPlayer({ source }) {
   const videoRef = useRef(null)
-  if (source.source_type !== 'video' || !source.doc_id) return null
-
+  const [hasPlaybackError, setHasPlaybackError] = useState(false)
+  const isVideo = isVideoSource(source)
+  const encodedDocId = source.doc_id ? encodeURIComponent(source.doc_id) : ''
   const start = numericTime(source.start_time ?? source.metadata?.start_time) ?? 0
   const end = numericTime(source.end_time ?? source.metadata?.end_time)
+  const hasEnd = end !== null && end > start
   const startLabel = source.start_time_label ?? source.metadata?.start_time_label ?? formatVideoTime(start)
-  const endLabel = source.end_time_label ?? source.metadata?.end_time_label ?? (end !== null ? formatVideoTime(end) : '')
+  const endLabel = source.end_time_label ?? source.metadata?.end_time_label ?? (hasEnd ? formatVideoTime(end) : '')
   const clipLabel = endLabel ? `${startLabel} - ${endLabel}` : `From ${startLabel}`
-  const encodedDocId = encodeURIComponent(source.doc_id)
-  const videoUrl =
-    end !== null
-      ? `${API_BASE_URL}/media/video-clips/${encodedDocId}?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`
-      : `${API_BASE_URL}/media/videos/${encodedDocId}#t=${start}`
+  const timeFragment = `#t=${start}${hasEnd ? `,${end}` : ''}`
+  const videoUrl = encodedDocId ? `${API_BASE_URL}/media/videos/${encodedDocId}${timeFragment}` : ''
+
+  useEffect(() => {
+    setHasPlaybackError(false)
+  }, [videoUrl])
+
+  if (!isVideo || !source.doc_id) return null
 
   function handleLoadedMetadata(event) {
-    if (end === null) {
+    if (start > 0 && Math.abs(event.currentTarget.currentTime - start) > 1) {
       event.currentTarget.currentTime = start
     }
   }
 
   function handleTimeUpdate(event) {
-    if (end === null) return
+    if (!hasEnd) return
     if (event.currentTarget.currentTime >= end) {
       event.currentTarget.pause()
     }
@@ -236,7 +245,13 @@ function VideoClipPlayer({ source }) {
         src={videoUrl}
         onLoadedMetadata={handleLoadedMetadata}
         onTimeUpdate={handleTimeUpdate}
+        onError={() => setHasPlaybackError(true)}
       />
+      {hasPlaybackError ? (
+        <div className="video-clip__error" role="status">
+          Video source is not available for playback yet.
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -287,12 +302,12 @@ function formatVideoTime(seconds) {
 
 function sourceDisplayContent(source = {}) {
   const content = String(source.content || '').trim()
-  if (source.source_type === 'video') return ''
+  if (isVideoSource(source)) return ''
   return content
 }
 
 function sourceTypeLabel(source = {}) {
-  return source.source_type === 'video' ? 'Video' : 'PDF/Text'
+  return isVideoSource(source) ? 'Video' : 'PDF/Text'
 }
 
 function CitationList({ items, openSource, onToggle }) {
@@ -342,7 +357,7 @@ function CitationList({ items, openSource, onToggle }) {
 function SourceChunk({ source, citation, index, onClose }) {
   const pages = source.page_numbers?.length ? source.page_numbers : citation?.pages
   const pageLabel =
-    source.source_type === 'video'
+    isVideoSource(source)
       ? citationLocations(source, citation, index).join(', ')
       : pages?.length
         ? `Page ${pages.join(', ')}`
@@ -364,9 +379,9 @@ function SourceChunk({ source, citation, index, onClose }) {
         </div>
       </div>
       <h3>{documentName}</h3>
-      {source.source_type !== 'video' && source.section ? <h4>{source.section}</h4> : null}
+      {!isVideoSource(source) && source.section ? <h4>{source.section}</h4> : null}
       <VideoClipPlayer source={source} />
-      {source.source_type !== 'video' && citation?.quote ? <blockquote>{citation.quote}</blockquote> : null}
+      {!isVideoSource(source) && citation?.quote ? <blockquote>{citation.quote}</blockquote> : null}
       {displayContent ? (
         <p>{displayContent}</p>
       ) : null}
