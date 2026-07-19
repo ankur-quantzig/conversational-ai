@@ -31,6 +31,8 @@ env:
     value: databricks-gemini-3-5-flash
   - name: VIDEO_TRANSCRIPTION_PROVIDER
     value: databricks
+  - name: INSIGHT_OUTPUT_ROOT
+    value: output
   - name: DATABRICKS_DATA_VOLUME
     value: /Volumes/<catalog>/<schema>/<input_volume>
   - name: DATABRICKS_OUTPUT_VOLUME

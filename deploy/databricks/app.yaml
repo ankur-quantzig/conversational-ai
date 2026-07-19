@@ -27,6 +27,8 @@ env:
     value: databricks-claude-sonnet-4
   - name: DATABRICKS_EMBEDDING_ENDPOINT
     value: databricks-bge-large-en
+  - name: INSIGHT_OUTPUT_ROOT
+    value: output
   - name: DATABRICKS_DATA_VOLUME
     value: /Volumes/insight-copilot/bronze/shell-bronze-insight-copilot
   - name: DATABRICKS_OUTPUT_VOLUME
