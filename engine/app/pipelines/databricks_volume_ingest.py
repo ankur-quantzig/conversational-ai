@@ -36,7 +36,9 @@ DEFAULT_EXCLUDE = [
     "**/~$*",
     "**/.trash/**",
     "**/_delta_log/**",
+    "_insight_copilot_output/**",
     "**/_insight_copilot_output/**",
+    "insight-copilot-output/**",
     "**/insight-copilot-output/**",
 ]
 SECRET_ENV_KEYS = [
@@ -111,17 +113,34 @@ def fingerprint(path: Path) -> FileFingerprint:
 
 def matches_any(path: Path, patterns: list[str], root: Path) -> bool:
     relative = path.relative_to(root).as_posix()
-    return any(fnmatch.fnmatch(relative, pattern) or fnmatch.fnmatch(path.name, pattern) for pattern in patterns)
+    return any(
+        fnmatch.fnmatch(relative, pattern)
+        or fnmatch.fnmatch(f"./{relative}", pattern)
+        or fnmatch.fnmatch(path.name, pattern)
+        for pattern in patterns
+    )
 
 
-def discover_files(root: Path, include: list[str], exclude: list[str]) -> list[Path]:
+def is_under(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def discover_files(root: Path, include: list[str], exclude: list[str], excluded_roots: list[Path] | None = None) -> list[Path]:
     if not root.exists():
         raise FileNotFoundError(f"Input Volume path does not exist: {root}")
     if root.is_file():
         return [root]
+    excluded_resolved = [path.resolve() for path in excluded_roots or []]
     files = []
     for path in root.rglob("*"):
         if not path.is_file():
+            continue
+        resolved_path = path.resolve()
+        if any(is_under(resolved_path, excluded_root) for excluded_root in excluded_resolved):
             continue
         if not matches_any(path, include, root):
             continue
@@ -145,6 +164,19 @@ def file_changed(file_key: str, current: FileFingerprint, manifest: dict[str, An
         or int(old.get("size_bytes") or -1) != current.size_bytes
         or int(old.get("modified_ns") or -1) != current.modified_ns
     )
+
+
+def is_fatal_external_error(exc: Exception) -> bool:
+    message = f"{type(exc).__name__}: {exc}".lower()
+    fatal_markers = (
+        "insufficient_quota",
+        "exceeded your current quota",
+        "billing details",
+        "invalid_api_key",
+        "incorrect api key",
+        "authenticationerror",
+    )
+    return any(marker in message for marker in fatal_markers)
 
 
 def output_summary_path() -> Path:
@@ -436,7 +468,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     include = parse_patterns(args.include, DEFAULT_INCLUDE)
     exclude = parse_patterns(args.exclude, DEFAULT_EXCLUDE)
     manifest = read_manifest(manifest_path)
-    discovered = discover_files(input_root, include=include, exclude=exclude)
+    discovered = discover_files(input_root, include=include, exclude=exclude, excluded_roots=[output_dir()])
     log(f"Discovered {len(discovered)} supported files under {input_root}")
 
     candidates = []
@@ -501,6 +533,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             run_summary["failed"].append(error)
             write_manifest(manifest_path, manifest)
             log(f"Failed {path}: {type(exc).__name__}: {exc}")
+            if is_fatal_external_error(exc):
+                run_summary["fatal_error"] = error
+                log("Stopping ingestion early because a fatal external service error was detected.")
+                break
             if args.fail_fast:
                 break
 

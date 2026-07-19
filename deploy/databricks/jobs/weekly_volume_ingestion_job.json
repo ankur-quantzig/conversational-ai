@@ -5,6 +5,9 @@
     "owner": "engine",
     "purpose": "incremental-volume-ingestion"
   },
+  "run_as": {
+    "service_principal_name": "7344d97b-7dcf-48b5-9cd2-905310a5d29e"
+  },
   "schedule": {
     "quartz_cron_expression": "0 0 2 ? * SUN *",
     "timezone_id": "Asia/Kolkata",
@@ -25,10 +28,15 @@
           "/Volumes/insight-copilot/bronze/shell-bronze-insight-copilot/_insight_copilot_output",
           "--secret-scope",
           "insight-copilot",
+          "--frame-interval-seconds",
+          "30",
+          "--chunk-window-seconds",
+          "60",
+          "--skip-video-vision",
           "--ocr-workers",
           "2",
           "--vision-workers",
-          "2",
+          "1",
           "--vision-timeout-seconds",
           "120"
         ]

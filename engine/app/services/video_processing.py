@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -173,22 +174,27 @@ def probe_video(video_path: Path) -> dict[str, Any]:
 def extract_audio(video_path: Path, audio_path: Path) -> None:
     ffmpeg = require_binary("ffmpeg")
     audio_path.parent.mkdir(parents=True, exist_ok=True)
-    run_command(
-        [
-            ffmpeg,
-            "-y",
-            "-i",
-            str(video_path),
-            "-vn",
-            "-ac",
-            "1",
-            "-ar",
-            "16000",
-            "-b:a",
-            "32k",
-            str(audio_path),
-        ]
-    )
+    with tempfile.TemporaryDirectory(prefix="insight-video-audio-") as temporary_dir:
+        temporary_audio = Path(temporary_dir) / audio_path.name
+        run_command(
+            [
+                ffmpeg,
+                "-y",
+                "-i",
+                str(video_path),
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-b:a",
+                "32k",
+                str(temporary_audio),
+            ]
+        )
+        if not temporary_audio.exists() or temporary_audio.stat().st_size < 1024:
+            raise RuntimeError(f"Audio extraction produced an empty or incomplete file: {temporary_audio}")
+        shutil.copy2(temporary_audio, audio_path)
 
 
 def extract_frames(video_path: Path, frames_dir: Path, interval_seconds: float) -> list[dict[str, Any]]:
@@ -692,9 +698,12 @@ def process_video(
         f"Duration {format_time(metadata.get('duration_seconds', 0))}; "
         f"extracting audio to {paths.audio}"
     )
-    if paths.audio.exists():
+    if paths.audio.exists() and paths.audio.stat().st_size >= 1024:
         log_step(f"Using existing audio {paths.audio}")
     else:
+        if paths.audio.exists():
+            log_step(f"Regenerating incomplete audio {paths.audio}")
+            paths.audio.unlink(missing_ok=True)
         extract_audio(video_path, paths.audio)
     log_step(f"Extracting frames every {frame_interval_seconds:g}s to {paths.frames_dir}")
     existing_frames = sorted(paths.frames_dir.glob("frame_*.jpg"))
