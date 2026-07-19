@@ -29,7 +29,11 @@ env:
     value: databricks-bge-large-en
   - name: DATABRICKS_TRANSCRIPTION_ENDPOINT
     value: databricks-gemini-3-5-flash
+  - name: DATABRICKS_VISION_ENDPOINT
+    value: databricks-gemini-3-5-flash
   - name: VIDEO_TRANSCRIPTION_PROVIDER
+    value: databricks
+  - name: VIDEO_VISION_PROVIDER
     value: databricks
   - name: INSIGHT_OUTPUT_ROOT
     value: output

@@ -19,9 +19,10 @@ from typing import Any
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from app.clients.databricks_model_serving import analyze_image as databricks_analyze_image
 from app.clients.databricks_model_serving import transcribe_audio as databricks_transcribe_audio
 from app.clients.document_intelligence import client_from_env, env_value, load_dotenv_file
-from app.config import databricks_transcription_endpoint, llm_provider
+from app.config import databricks_transcription_endpoint, databricks_vision_endpoint, llm_provider
 from app.rag.answer import require_all_properties
 from app.services.chunk_document import estimate_tokens, slugify, stable_id, write_jsonl
 from app.services.extract_layout import normalize_di_result
@@ -578,9 +579,42 @@ def analyze_frame_with_vision(frame_path: Path, model: str | None = None, retrie
     return {
         "image_path": str(frame_path),
         "model": model,
+        "provider": "openai",
         "analysis": structured.frame_summary,
         "structured": structured.model_dump(),
     }
+
+
+def analyze_frame_with_databricks_vision(frame_path: Path, model: str | None = None, retries: int = 3) -> dict[str, Any]:
+    load_dotenv_file()
+    model = model or databricks_vision_endpoint()
+    schema = json.dumps(frame_vision_schema(), ensure_ascii=False)
+    prompt = (
+        "Extract all important information from this video frame. Include visible slide titles, "
+        "on-screen text, diagrams, charts, UI screens, objects, labels, and concepts. "
+        "Be exhaustive but concise. Return only valid JSON matching this JSON schema:\n"
+        f"{schema}"
+    )
+    last_error = ""
+    for attempt in range(1, retries + 1):
+        try:
+            raw_text = databricks_analyze_image(frame_path, prompt=prompt, endpoint=model, max_tokens=1400, timeout=180)
+            structured = parse_frame_vision(raw_text)
+            return {
+                "image_path": str(frame_path),
+                "model": model,
+                "provider": "databricks",
+                "analysis": structured.frame_summary,
+                "structured": structured.model_dump(),
+            }
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            if attempt == retries:
+                break
+            delay = min(30, 2**attempt)
+            log_step(f"Databricks vision retry {attempt}/{retries - 1} for {frame_path.name}: {exc}. Waiting {delay}s")
+            time.sleep(delay)
+    raise RuntimeError(last_error)
 
 
 def analyze_frame_with_vision_subprocess(
@@ -619,10 +653,22 @@ def analyze_frame_with_vision_subprocess(
     raise RuntimeError(last_error)
 
 
-def vision_failure_result(frame_path: Path, error: Exception) -> dict[str, Any]:
+def vision_failure_result(
+    frame_path: Path,
+    error: Exception,
+    provider: str | None = None,
+    model: str | None = None,
+) -> dict[str, Any]:
+    resolved_provider = resolve_vision_provider(provider)
+    resolved_model = model or (
+        databricks_vision_endpoint()
+        if resolved_provider == "databricks"
+        else env_value("OPENAI_VISION_MODEL") or DEFAULT_VISION_MODEL
+    )
     return {
         "image_path": str(frame_path),
-        "model": env_value("OPENAI_VISION_MODEL") or DEFAULT_VISION_MODEL,
+        "model": resolved_model,
+        "provider": resolved_provider,
         "analysis": "",
         "structured": FrameVisionExtraction(
             frame_summary="",
@@ -641,7 +687,10 @@ def analyze_frames_with_vision(
     checkpoint_path: Path | None = None,
     workers: int = 1,
     timeout_seconds: int = 0,
+    provider: str | None = None,
+    model: str | None = None,
 ) -> list[dict[str, Any]]:
+    resolved_provider = resolve_vision_provider(provider)
     results = load_frame_checkpoint(checkpoint_path)
     completed = {item.get("image_path") for item in results}
     total = len(frames)
@@ -652,10 +701,10 @@ def analyze_frames_with_vision(
         for index, frame in pending:
             log_step(f"Vision analysis frame {index}/{total} at {format_time(frame.get('timestamp', 0))}")
             try:
-                analysis = run_frame_vision(frame, timeout_seconds=timeout_seconds)
+                analysis = run_frame_vision(frame, timeout_seconds=timeout_seconds, provider=resolved_provider, model=model)
             except Exception as exc:
                 log_step(f"Vision failed frame {index}/{total} at {format_time(frame.get('timestamp', 0))}: {exc}")
-                analysis = vision_failure_result(Path(frame["image_path"]), exc)
+                analysis = vision_failure_result(Path(frame["image_path"]), exc, provider=resolved_provider, model=model)
             results.append({**frame, **analysis})
             results.sort(key=frame_sort_key)
             write_frame_checkpoint(checkpoint_path, results)
@@ -664,7 +713,7 @@ def analyze_frames_with_vision(
     log_step(f"Vision pending frames: {len(pending)} with {workers} workers")
     with ThreadPoolExecutor(max_workers=workers) as executor:
         future_map = {
-            executor.submit(run_frame_vision, frame, timeout_seconds): (index, frame)
+            executor.submit(run_frame_vision, frame, timeout_seconds, resolved_provider, model): (index, frame)
             for index, frame in pending
         }
         for future in as_completed(future_map):
@@ -673,7 +722,7 @@ def analyze_frames_with_vision(
                 analysis = future.result()
             except Exception as exc:
                 log_step(f"Vision failed frame {index}/{total} at {format_time(frame.get('timestamp', 0))}: {exc}")
-                analysis = vision_failure_result(Path(frame["image_path"]), exc)
+                analysis = vision_failure_result(Path(frame["image_path"]), exc, provider=resolved_provider, model=model)
             log_step(f"Vision complete frame {index}/{total} at {format_time(frame.get('timestamp', 0))}")
             results.append({**frame, **analysis})
             results.sort(key=frame_sort_key)
@@ -681,11 +730,26 @@ def analyze_frames_with_vision(
     return results
 
 
-def run_frame_vision(frame: dict[str, Any], timeout_seconds: int = 0) -> dict[str, Any]:
+def run_frame_vision(
+    frame: dict[str, Any],
+    timeout_seconds: int = 0,
+    provider: str | None = None,
+    model: str | None = None,
+) -> dict[str, Any]:
     frame_path = Path(frame["image_path"])
+    resolved_provider = resolve_vision_provider(provider)
+    if resolved_provider == "databricks":
+        return analyze_frame_with_databricks_vision(frame_path, model=model)
     if timeout_seconds > 0:
-        return analyze_frame_with_vision_subprocess(frame_path, timeout_seconds=timeout_seconds)
-    return analyze_frame_with_vision(frame_path)
+        return analyze_frame_with_vision_subprocess(frame_path, timeout_seconds=timeout_seconds, model=model)
+    return analyze_frame_with_vision(frame_path, model=model)
+
+
+def resolve_vision_provider(provider: str | None) -> str:
+    resolved = (provider or env_value("VIDEO_VISION_PROVIDER") or "auto").strip().lower()
+    if resolved == "auto":
+        return "databricks" if llm_provider() == "databricks" else "openai"
+    return resolved
 
 
 def load_frame_checkpoint(path: Path | None) -> list[dict[str, Any]]:
@@ -747,6 +811,7 @@ def merge_frame_extractions(
         ocr = ocr_by_path.get(image_path, {})
         vision = vision_by_path.get(image_path, {})
         structured = vision.get("structured") or {}
+        vision_source = f"{vision.get('provider') or 'openai'}_vision"
         facts: list[str] = []
         add_unique_text(facts, ocr.get("content", ""))
         if structured:
@@ -774,7 +839,7 @@ def merge_frame_extractions(
                 "vision": structured,
                 "analysis": vision.get("analysis", ""),
                 "merged_text": merged_text,
-                "sources": ["azure_document_intelligence"] + (["openai_vision"] if vision else []),
+                "sources": ["azure_document_intelligence"] + ([vision_source] if vision else []),
                 "dedupe": {
                     "merged_items": len(facts),
                     "ocr_chars": len(ocr.get("content", "") or ""),
@@ -894,6 +959,8 @@ def process_video(
     audio_segment_seconds: float = DEFAULT_AUDIO_SEGMENT_SECONDS,
     transcription_max_tokens: int = DEFAULT_TRANSCRIPTION_MAX_TOKENS,
     skip_vision: bool = False,
+    vision_provider: str | None = None,
+    vision_model: str | None = None,
     ocr_workers: int = 1,
     vision_workers: int = 1,
     vision_timeout_seconds: int = 0,
@@ -966,10 +1033,13 @@ def process_video(
             log_step("Running Azure Document Intelligence OCR on frames")
         frame_ocr = ocr_frames(frames, checkpoint_path=paths.frame_ocr, workers=max(1, ocr_workers))
     log_step(f"OCR frames complete: {len(frame_ocr)}")
-    if skip_vision:
+    resolved_vision_provider = resolve_vision_provider(vision_provider)
+    vision_disabled = skip_vision or resolved_vision_provider == "none"
+    if vision_disabled:
         log_step("Skipping frame vision summaries")
         visual_analysis = []
     else:
+        log_step(f"Frame vision provider: {resolved_vision_provider}")
         existing_vision = load_frame_checkpoint(paths.visual_analysis)
         if len(existing_vision) >= len(frames):
             log_step(f"Using complete frame vision summaries {paths.visual_analysis}")
@@ -984,6 +1054,8 @@ def process_video(
                 checkpoint_path=paths.visual_analysis,
                 workers=max(1, vision_workers),
                 timeout_seconds=max(0, vision_timeout_seconds),
+                provider=resolved_vision_provider,
+                model=vision_model,
             )
     log_step("Merging Azure OCR and frame vision results")
     merged_frames = merge_frame_extractions(frames, frame_ocr, visual_analysis)

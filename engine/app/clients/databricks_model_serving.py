@@ -8,7 +8,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from app.config import databricks_chat_endpoint, databricks_host, databricks_token, databricks_transcription_endpoint
+from app.config import databricks_chat_endpoint, databricks_host, databricks_token, databricks_transcription_endpoint, databricks_vision_endpoint
 
 
 def runtime_host_token() -> tuple[str, str]:
@@ -153,11 +153,48 @@ def transcribe_audio(
     return extract_message_content(data)
 
 
+def analyze_image(
+    image_path: Path,
+    prompt: str,
+    endpoint: str | None = None,
+    max_tokens: int = 1400,
+    timeout: int = 180,
+) -> str:
+    endpoint_name = endpoint or databricks_vision_endpoint()
+    mime_type = image_mime_type(image_path)
+    image_b64 = base64.standard_b64encode(image_path.read_bytes()).decode("utf-8")
+    payload = {
+        "model": endpoint_name,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_b64}"}},
+                ],
+            }
+        ],
+        "temperature": 0.0,
+        "max_tokens": max_tokens,
+    }
+    data = invoke_chat_completions(payload, timeout=timeout)
+    return extract_message_content(data)
+
+
 def audio_mime_type(audio_path: Path) -> str:
     if audio_path.suffix.lower() == ".mp3":
         return "audio/mp3"
     guessed, _ = mimetypes.guess_type(str(audio_path))
     return guessed or "audio/mpeg"
+
+
+def image_mime_type(image_path: Path) -> str:
+    if image_path.suffix.lower() in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if image_path.suffix.lower() == ".png":
+        return "image/png"
+    guessed, _ = mimetypes.guess_type(str(image_path))
+    return guessed or "image/jpeg"
 
 
 def extract_embeddings(data: dict[str, Any]) -> list[list[float]]:

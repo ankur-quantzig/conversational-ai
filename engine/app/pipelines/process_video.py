@@ -26,7 +26,14 @@ def main() -> None:
     )
     parser.add_argument("--audio-segment-seconds", type=float, default=600.0, help="Chunk audio before Databricks transcription.")
     parser.add_argument("--transcription-max-tokens", type=int, default=4096, help="Max output tokens per audio transcription segment.")
-    parser.add_argument("--skip-vision", action="store_true", help="Skip OpenAI frame visual summaries.")
+    parser.add_argument("--skip-vision", action="store_true", help="Skip frame visual summaries.")
+    parser.add_argument(
+        "--vision-provider",
+        default="auto",
+        choices=["auto", "openai", "databricks", "none"],
+        help="Frame vision provider. In auto mode, Databricks LLM_PROVIDER uses Databricks vision.",
+    )
+    parser.add_argument("--vision-model", default="", help="Optional frame vision model or Databricks endpoint name.")
     parser.add_argument("--embed", action="store_true", help="Embed the generated chunks.")
     parser.add_argument("--rebuild-index", action="store_true", help="Rebuild LanceDB from all embedded files after embedding.")
     parser.add_argument("--parallel-videos", type=int, default=1, help="Number of videos to process concurrently.")
@@ -85,6 +92,8 @@ def process_one_video(index: int, total: int, video_path: Path, args: argparse.N
         audio_segment_seconds=args.audio_segment_seconds,
         transcription_max_tokens=args.transcription_max_tokens,
         skip_vision=args.skip_vision,
+        vision_provider=args.vision_provider,
+        vision_model=args.vision_model or None,
         ocr_workers=max(1, args.ocr_workers),
         vision_workers=max(1, args.vision_workers),
         vision_timeout_seconds=max(0, args.vision_timeout_seconds),

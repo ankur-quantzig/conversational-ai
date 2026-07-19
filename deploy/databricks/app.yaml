@@ -27,6 +27,8 @@ env:
     value: databricks-claude-sonnet-4
   - name: DATABRICKS_EMBEDDING_ENDPOINT
     value: databricks-bge-large-en
+  - name: DATABRICKS_VISION_ENDPOINT
+    value: databricks-gemini-3-5-flash
   - name: INSIGHT_OUTPUT_ROOT
     value: output
   - name: DATABRICKS_DATA_VOLUME

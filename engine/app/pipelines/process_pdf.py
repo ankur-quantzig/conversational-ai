@@ -12,7 +12,9 @@ import fitz
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from app.clients.databricks_model_serving import analyze_image as databricks_analyze_image
 from app.clients.document_intelligence import client_from_env, env_value, load_dotenv_file
+from app.config import databricks_vision_endpoint, llm_provider
 from app.rag.answer import require_all_properties
 from app.services.extract_layout import normalize_di_result
 from app.services.extract_tables import reconstruct_tables_from_text
@@ -184,6 +186,7 @@ Nearby extracted page text:
                 "image_path": display_path(image_path),
                 "status": "ok",
                 "model": model,
+                "provider": "openai",
                 "analysis": structured.page_summary,
                 "structured": structured.model_dump(),
                 "error": "",
@@ -195,10 +198,64 @@ Nearby extracted page text:
         "image_path": display_path(image_path),
         "status": "error",
         "model": None,
+        "provider": "openai",
         "analysis": "",
         "structured": {},
         "error": last_error,
     }
+
+
+def analyze_page_with_databricks(model: str | None, pdf_path: Path, page_number: int, image_path: Path, page_text: str) -> dict:
+    endpoint = model or databricks_vision_endpoint()
+    schema = json.dumps(page_vision_schema(), ensure_ascii=False)
+    prompt = f"""
+You are extracting all useful content from a rendered PDF page.
+
+PDF: {pdf_path.name}
+Page: {page_number}
+
+Task:
+1. Read the page image and extract all important information that a text parser may miss.
+2. Capture visible headings, labels, figures, flow charts, diagrams, architecture drawings, plots, graphs, tables, equations, screenshots, and callouts.
+3. Use the nearby Azure Document Intelligence text as supporting context, but do not simply copy it unless it is needed to complete the page extraction.
+4. Be exhaustive and precise. Nothing important on the page should be omitted.
+5. Return only valid JSON matching this JSON schema:
+{schema}
+
+Nearby extracted page text:
+{page_text[:3500]}
+""".strip()
+    try:
+        raw_text = databricks_analyze_image(image_path, prompt=prompt, endpoint=endpoint, max_tokens=1800, timeout=180)
+        structured = parse_page_vision(raw_text)
+        return {
+            "page_number": page_number,
+            "image_path": display_path(image_path),
+            "status": "ok",
+            "model": endpoint,
+            "provider": "databricks",
+            "analysis": structured.page_summary,
+            "structured": structured.model_dump(),
+            "error": "",
+        }
+    except Exception as exc:
+        return {
+            "page_number": page_number,
+            "image_path": display_path(image_path),
+            "status": "error",
+            "model": endpoint,
+            "provider": "databricks",
+            "analysis": "",
+            "structured": {},
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def resolve_vision_provider(provider: str | None) -> str:
+    resolved = (provider or env_value("PDF_VISION_PROVIDER") or "auto").strip().lower()
+    if resolved == "auto":
+        return "databricks" if llm_provider() == "databricks" else "openai"
+    return resolved
 
 
 def page_records(pdf_path: Path, di_result: dict, all_pages: bool = False) -> list[dict]:
@@ -308,6 +365,7 @@ def merge_page_extractions(di_result: dict[str, Any], page_records_payload: list
         di_tables = tables_for_page(di_result, page_number)
         vision = vision_by_page.get(page_number) or {}
         structured = vision.get("structured") or {}
+        vision_source = f"{vision.get('provider') or 'openai'}_vision"
 
         facts: list[str] = []
         for paragraph in paragraphs:
@@ -346,7 +404,7 @@ def merge_page_extractions(di_result: dict[str, Any], page_records_payload: list
                     if part
                 )
                 if text:
-                    table_blocks.append({"source": "openai_vision", "title": table.get("title", ""), "text": text})
+                    table_blocks.append({"source": vision_source, "title": table.get("title", ""), "text": text})
                     add_unique_text(facts, text)
             for equation in structured.get("equations", []) or []:
                 add_unique_text(facts, f"Equation: {equation}")
@@ -356,7 +414,7 @@ def merge_page_extractions(di_result: dict[str, Any], page_records_payload: list
             {
                 "page_number": page_number,
                 "merged_text": merged_text,
-                "sources": ["azure_document_intelligence"] + (["openai_vision"] if structured else []),
+                "sources": ["azure_document_intelligence"] + ([vision_source] if structured else []),
                 "azure_di": {
                     "page_text": page_text,
                     "paragraph_count": len(paragraphs),
@@ -374,7 +432,7 @@ def merge_page_extractions(di_result: dict[str, Any], page_records_payload: list
     return {
         "pages": merged_pages,
         "page_count": len(merged_pages),
-        "sources": ["azure_document_intelligence", "openai_vision"],
+        "sources": sorted({"azure_document_intelligence", *[f"{item.get('provider') or 'openai'}_vision" for item in visual_pages]}),
         "dedupe_method": "normalized text containment plus SequenceMatcher >= 0.90",
     }
 
@@ -384,6 +442,7 @@ def analyze_pdf(
     all_pages: bool = False,
     force_all_visual: bool = False,
     vision_model: str | None = None,
+    vision_provider: str | None = None,
     skip_vision: bool = False,
 ) -> dict:
     load_dotenv_file()
@@ -405,16 +464,25 @@ def analyze_pdf(
 
     visual_pages = []
     vision_candidates: list[str] = []
-    if not skip_vision:
-        client = OpenAI(api_key=env_value("OPENAI_API_KEY", "OPANAI_API_KEY"))
-        vision_candidates = [m.strip() for m in (vision_model or DEFAULT_VISION_MODEL).split(",") if m.strip()]
-        for extra in ("gpt-4o-mini", "gpt-4.1-mini", "gpt-4o"):
-            if extra not in vision_candidates:
-                vision_candidates.append(extra)
+    resolved_vision_provider = resolve_vision_provider(vision_provider)
+    if not skip_vision and resolved_vision_provider != "none":
+        client = None
+        if resolved_vision_provider == "openai":
+            client = OpenAI(api_key=env_value("OPENAI_API_KEY", "OPANAI_API_KEY"))
+            vision_candidates = [m.strip() for m in (vision_model or DEFAULT_VISION_MODEL).split(",") if m.strip()]
+            for extra in ("gpt-4o-mini", "gpt-4.1-mini", "gpt-4o"):
+                if extra not in vision_candidates:
+                    vision_candidates.append(extra)
+        else:
+            vision_candidates = [vision_model or databricks_vision_endpoint()]
 
         for candidate in candidates:
             image_path = render_page(pdf_path, candidate["page_number"])
-            result = analyze_page_with_openai(client, vision_candidates, pdf_path, candidate["page_number"], image_path, candidate["text"])
+            if resolved_vision_provider == "databricks":
+                result = analyze_page_with_databricks(vision_candidates[0], pdf_path, candidate["page_number"], image_path, candidate["text"])
+            else:
+                assert client is not None
+                result = analyze_page_with_openai(client, vision_candidates, pdf_path, candidate["page_number"], image_path, candidate["text"])
             result["reason"] = candidate["reason"]
             result["has_visual"] = candidate.get("has_visual", False)
             result["image_count"] = candidate.get("image_count", 0)
@@ -427,6 +495,7 @@ def analyze_pdf(
         "document_intelligence": di_result,
         "vision_model": vision_candidates[0] if vision_candidates else "",
         "vision_model_candidates": vision_candidates,
+        "vision_provider": resolved_vision_provider,
         "vision_skipped": skip_vision,
         "vision_candidate_pages": [
             {
@@ -466,12 +535,13 @@ def analyze_pdf(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Analyze PDF text/layout and figure pages with OpenAI vision.")
+    parser = argparse.ArgumentParser(description="Analyze PDF text/layout and figure pages with OCR plus optional LLM vision.")
     parser.add_argument("pdf", nargs="?", help="PDF path. Defaults to the REALM sample PDF.")
     parser.add_argument("--all-pages", action="store_true", default=True, help="Analyze every page in the PDF.")
     parser.add_argument("--force-all-visual", action="store_true", help="Ignore page screening and send all pages to vision.")
     parser.add_argument("--vision-model", default=DEFAULT_VISION_MODEL)
-    parser.add_argument("--skip-vision", action="store_true", help="Skip OpenAI page vision and use OCR/layout only.")
+    parser.add_argument("--vision-provider", choices=["auto", "openai", "databricks", "none"], default="auto")
+    parser.add_argument("--skip-vision", action="store_true", help="Skip page vision and use OCR/layout only.")
     args = parser.parse_args()
     pdf_path = Path(args.pdf).resolve() if args.pdf else pick_pdf()
     payload = analyze_pdf(
@@ -479,6 +549,7 @@ def main() -> None:
         all_pages=args.all_pages,
         force_all_visual=args.force_all_visual,
         vision_model=args.vision_model,
+        vision_provider=args.vision_provider,
         skip_vision=args.skip_vision,
     )
     print(json.dumps({"input_pdf": payload["input_pdf"], "pages": len(payload["document_intelligence"]["pages"]), "content_chars": payload["document_intelligence"]["content_chars"], "tables": len(payload["document_intelligence"]["tables"]), "vision_model": payload["vision_model"], "vision_pages": [v["page_number"] for v in payload["visual_analysis"]], "output": display_path(OUTPUT_DIR / f"{pdf_path.stem[:80]}-multimodal-analysis.json")}, indent=2))

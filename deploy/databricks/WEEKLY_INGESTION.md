@@ -1,18 +1,21 @@
 # Weekly Databricks Volume Ingestion
 
-This pipeline scans a Databricks Volume for new or updated files, processes only changed files, and writes retrieval artifacts to a shared output Volume. The deployed Databricks App should read the same output Volume through `DATABRICKS_OUTPUT_VOLUME`.
+This pipeline scans a Databricks Volume for new or updated files, processes only changed files, writes retrieval artifacts to a shared output Volume, and appends Bronze/Silver/Gold Delta tables in Unity Catalog. The deployed Databricks App should read the same output Volume through `DATABRICKS_OUTPUT_VOLUME`.
 
 ## What It Does
 
 ```text
 Databricks Volume input
   -> incremental manifest check
-  -> PDF OCR/layout extraction
-  -> video audio transcription + frame OCR extraction
-  -> plain text ingestion
+  -> Bronze raw file audit table
+  -> PDF OCR/layout + optional Databricks page vision
+  -> video audio transcription + frame OCR + optional Databricks frame vision
+  -> plain text and DOCX ingestion
   -> optional Office conversion to PDF when LibreOffice is available
+  -> Silver extracted content table
   -> chunks
   -> Databricks embedding endpoint
+  -> Gold embedded chunks table
   -> embedded JSONL
   -> LanceDB rag_chunks index
   -> shared output Volume
@@ -38,7 +41,9 @@ DATABRICKS_TOKEN=<secret>
 DATABRICKS_CHAT_ENDPOINT=databricks-claude-sonnet-4
 DATABRICKS_EMBEDDING_ENDPOINT=databricks-bge-large-en
 DATABRICKS_TRANSCRIPTION_ENDPOINT=databricks-gemini-3-5-flash
+DATABRICKS_VISION_ENDPOINT=databricks-gemini-3-5-flash
 VIDEO_TRANSCRIPTION_PROVIDER=databricks
+VIDEO_VISION_PROVIDER=databricks
 DATABRICKS_DATA_VOLUME=/Volumes/<catalog>/<schema>/<input_volume>
 DATABRICKS_OUTPUT_VOLUME=/Volumes/<catalog>/<schema>/<output_volume>/insight-copilot-output
 AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=<secret or env>
@@ -47,7 +52,7 @@ AZURE_DOCUMENT_INTELLIGENCE_KEY=<secret>
 
 The app must also have `DATABRICKS_OUTPUT_VOLUME` set, otherwise it will read the packaged demo `output/` folder instead of the weekly pipeline output.
 
-The scheduled job uses `--databricks-models-only`, which forces `LLM_PROVIDER=databricks`, uses the Databricks embedding endpoint for chunks, uses the Databricks Gemini transcription endpoint for spoken video audio, and disables OpenAI-only ingestion steps. In this mode `OPENAI_API_KEY` is not required or used.
+The scheduled job uses `--databricks-models-only`, which forces `LLM_PROVIDER=databricks`, uses the Databricks embedding endpoint for chunks, uses the Databricks Gemini endpoint for spoken video audio and visual extraction, and removes OpenAI credentials from the ingestion runtime. In this mode `OPENAI_API_KEY` is not required or used.
 
 For this workspace, the discovered managed Volume is:
 
@@ -58,8 +63,8 @@ DATABRICKS_OUTPUT_VOLUME=/Volumes/insight-copilot/bronze/shell-bronze-insight-co
 
 ## Supported Inputs
 
-- PDFs: Azure Document Intelligence OCR/layout extraction. OpenAI page vision is skipped in Databricks-only mode.
-- Videos: spoken audio transcription through `DATABRICKS_TRANSCRIPTION_ENDPOINT`, frame OCR, and timestamped chunks. Frame vision summaries are skipped in Databricks-only mode.
+- PDFs: Azure Document Intelligence OCR/layout extraction plus optional Databricks page vision through `DATABRICKS_VISION_ENDPOINT`.
+- Videos: spoken audio transcription through `DATABRICKS_TRANSCRIPTION_ENDPOINT`, frame OCR, optional Databricks frame vision, and timestamped chunks.
 - Text-like docs: `.txt`, `.md`, `.csv`, `.json`, `.jsonl`, `.html`, `.log`.
 - Office docs: `.docx`, `.pptx`, `.xlsx`, legacy Office files if `libreoffice` or `soffice` exists on the job cluster.
 
@@ -110,7 +115,9 @@ llm_provider: databricks
 databricks_models_only: true
 databricks_embedding_endpoint: databricks-bge-large-en
 databricks_transcription_endpoint: databricks-gemini-3-5-flash
+databricks_vision_endpoint: databricks-gemini-3-5-flash
 video_transcription_provider: databricks
+video_vision_provider: databricks
 DATABRICKS_RUNTIME_AUTH: true
 OPENAI_API_KEY: false
 ```
@@ -122,6 +129,18 @@ databricks jobs submit --json "@deploy/databricks/jobs/volume_ingestion_smoke_su
 ```
 
 Expected smoke output includes `failed: []`, `active_embedding_model: databricks-bge-large-en`, and `target_vector_length: 1024`.
+
+## Medallion Tables
+
+With `--enable-medallion --medallion-required`, each successful run writes:
+
+```text
+`insight-copilot`.`bronze`.`insight_copilot_raw_files`
+`insight-copilot`.`silver`.`insight_copilot_extracted_content`
+`insight-copilot`.`gold`.`insight_copilot_rag_chunks`
+```
+
+Bronze stores one audit row per discovered file, including skipped/deferred/failed files. Silver stores extracted text, OCR, transcript, frame/page metadata, and artifact paths. Gold stores the retrieval-ready chunks with embeddings and embedding metadata.
 
 ## Create Or Update The Weekly Job
 

@@ -23,6 +23,7 @@ for path in (ROOT / "backend", ROOT / "engine", ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
+from app.pipelines.medallion import MedallionConfig, MedallionWriter
 from app.services.chunk_document import estimate_tokens, load_chunks_jsonl, slugify, stable_id, write_jsonl
 from app.utils.files import data_root, display_path, output_dir
 from app.utils.logging import dump_json
@@ -50,8 +51,10 @@ SECRET_ENV_KEYS = [
     "DATABRICKS_CHAT_ENDPOINT",
     "DATABRICKS_EMBEDDING_ENDPOINT",
     "DATABRICKS_TRANSCRIPTION_ENDPOINT",
+    "DATABRICKS_VISION_ENDPOINT",
     "LLM_PROVIDER",
     "VIDEO_TRANSCRIPTION_PROVIDER",
+    "VIDEO_VISION_PROVIDER",
     "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT",
     "AZURE_DOCUMENT_INTELLIGENCE_KEY",
 ]
@@ -200,10 +203,17 @@ def apply_model_mode(args: argparse.Namespace) -> None:
     if not args.databricks_models_only:
         return
     os.environ["LLM_PROVIDER"] = "databricks"
-    args.skip_pdf_vision = True
+    if args.pdf_vision_provider == "auto":
+        args.pdf_vision_provider = "databricks"
     if args.video_transcription_provider == "auto":
         args.video_transcription_provider = "databricks"
-    args.skip_video_vision = True
+    if args.video_vision_provider == "auto":
+        args.video_vision_provider = "databricks"
+    databricks_vision_model = os.getenv("DATABRICKS_VISION_ENDPOINT") or os.getenv("DATABRICKS_TRANSCRIPTION_ENDPOINT") or ""
+    if args.pdf_vision_provider == "databricks" and (not args.pdf_vision_model or args.pdf_vision_model.startswith("gpt-")):
+        args.pdf_vision_model = databricks_vision_model
+    if args.video_vision_provider == "databricks" and not args.video_vision_model:
+        args.video_vision_model = databricks_vision_model
     for key in OPENAI_ENV_KEYS:
         os.environ.pop(key, None)
 
@@ -255,6 +265,7 @@ def process_pdf_file(source_path: Path, args: argparse.Namespace) -> dict[str, A
         all_pages=True,
         force_all_visual=args.force_all_visual,
         vision_model=args.pdf_vision_model,
+        vision_provider=args.pdf_vision_provider,
         skip_vision=args.skip_pdf_vision,
     )
     di_json = Path(payload["document_intelligence_output"])
@@ -285,6 +296,8 @@ def process_video_file(source_path: Path, args: argparse.Namespace) -> dict[str,
         audio_segment_seconds=args.audio_segment_seconds,
         transcription_max_tokens=args.transcription_max_tokens,
         skip_vision=args.skip_video_vision,
+        vision_provider=args.video_vision_provider,
+        vision_model=args.video_vision_model,
         ocr_workers=args.ocr_workers,
         vision_workers=args.vision_workers,
         vision_timeout_seconds=args.vision_timeout_seconds,
@@ -606,7 +619,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "databricks_chat_endpoint": chat_endpoint,
                 "databricks_embedding_endpoint": embedding_endpoint,
                 "databricks_transcription_endpoint": transcription_endpoint,
+                "databricks_vision_endpoint": os.getenv("DATABRICKS_VISION_ENDPOINT", ""),
                 "video_transcription_provider": args.video_transcription_provider,
+                "video_vision_provider": args.video_vision_provider,
+                "pdf_vision_provider": args.pdf_vision_provider,
                 "audio_segment_seconds": args.audio_segment_seconds,
                 "skip_pdf_vision": args.skip_pdf_vision,
                 "skip_video_transcription": args.skip_video_transcription,
@@ -635,6 +651,24 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             },
         }
 
+    run_summary: dict[str, Any] = {
+        "started_at_epoch": int(time.time()),
+        "input_root": str(input_root),
+        "output_root": str(output_dir()),
+        "manifest_path": str(manifest_path),
+        "dry_run": args.dry_run,
+        "discovered_files": 0,
+        "changed_files": 0,
+        "processed": [],
+        "failed": [],
+        "skipped": 0,
+    }
+    run_id = f"volume-ingestion-{run_summary['started_at_epoch']}"
+    run_summary["run_id"] = run_id
+
+    medallion = MedallionWriter(MedallionConfig.from_args(args), input_root=input_root)
+    run_summary["medallion"] = medallion.setup()
+
     include = parse_patterns(args.include, DEFAULT_INCLUDE)
     exclude = parse_patterns(args.exclude, DEFAULT_EXCLUDE)
     manifest = read_manifest(manifest_path)
@@ -642,26 +676,36 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     log(f"Discovered {len(discovered)} supported files under {input_root}")
 
     candidates = []
+    skipped_count = 0
     for path in discovered:
         current = fingerprint(path)
         file_key = str(path.resolve())
         if file_changed(file_key, current, manifest, force=args.force):
             candidates.append((file_key, path, current))
+        else:
+            skipped_count += 1
+            medallion.record_file(
+                run_id=run_id,
+                source_path=path,
+                fingerprint=current,
+                status="skipped",
+                duration_seconds=0.0,
+            )
     if args.max_files:
+        deferred = candidates[args.max_files :]
+        for _, path, current in deferred:
+            skipped_count += 1
+            medallion.record_file(
+                run_id=run_id,
+                source_path=path,
+                fingerprint=current,
+                status="deferred",
+                duration_seconds=0.0,
+            )
         candidates = candidates[: args.max_files]
-
-    run_summary: dict[str, Any] = {
-        "started_at_epoch": int(time.time()),
-        "input_root": str(input_root),
-        "output_root": str(output_dir()),
-        "manifest_path": str(manifest_path),
-        "dry_run": args.dry_run,
-        "discovered_files": len(discovered),
-        "changed_files": len(candidates),
-        "processed": [],
-        "failed": [],
-        "skipped": len(discovered) - len(candidates),
-    }
+    run_summary["discovered_files"] = len(discovered)
+    run_summary["changed_files"] = len(candidates)
+    run_summary["skipped"] = skipped_count
 
     if args.dry_run:
         run_summary["changed_preview"] = [str(path) for _, path, _ in candidates]
@@ -678,6 +722,16 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             result = process_file(path, args)
             result["duration_seconds"] = round(time.perf_counter() - started, 3)
             result["fingerprint"] = current.to_dict()
+            medallion.record_file(
+                run_id=run_id,
+                source_path=path,
+                fingerprint=current,
+                status="success",
+                result=result,
+                duration_seconds=result["duration_seconds"],
+            )
+            medallion.record_extractions(run_id=run_id, result=result)
+            medallion.record_embeddings(run_id=run_id, result=result)
             manifest["files"][file_key] = {
                 "status": "success",
                 "processed_at_epoch": int(time.time()),
@@ -694,6 +748,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "traceback": traceback.format_exc(limit=8),
                 "fingerprint": current.to_dict(),
             }
+            medallion.record_file(
+                run_id=run_id,
+                source_path=path,
+                fingerprint=current,
+                status="failed",
+                error=error,
+                duration_seconds=round(time.perf_counter() - started, 3),
+            )
             manifest["files"][file_key] = {
                 "status": "failed",
                 "processed_at_epoch": int(time.time()),
@@ -752,6 +814,12 @@ def main() -> None:
     parser.add_argument("--force-all-visual", action="store_true")
     parser.add_argument("--skip-pdf-vision", action="store_true", help="Skip OpenAI PDF page vision and rely on Azure OCR/layout.")
     parser.add_argument("--pdf-vision-model", default=os.getenv("OPENAI_VISION_MODEL") or "gpt-4o-mini")
+    parser.add_argument(
+        "--pdf-vision-provider",
+        default=os.getenv("PDF_VISION_PROVIDER") or "auto",
+        choices=["auto", "openai", "databricks", "none"],
+        help="PDF page vision provider. Databricks-only mode maps auto to databricks.",
+    )
     parser.add_argument("--frame-interval-seconds", type=float, default=float(os.getenv("VIDEO_FRAME_INTERVAL_SECONDS") or 5.0))
     parser.add_argument("--chunk-window-seconds", type=float, default=float(os.getenv("VIDEO_CHUNK_WINDOW_SECONDS") or 30.0))
     parser.add_argument("--skip-video-transcription", action="store_true", help="Skip audio transcription and rely on visual OCR.")
@@ -764,9 +832,25 @@ def main() -> None:
     parser.add_argument("--audio-segment-seconds", type=float, default=float(os.getenv("VIDEO_AUDIO_SEGMENT_SECONDS") or 600.0))
     parser.add_argument("--transcription-max-tokens", type=int, default=int(os.getenv("VIDEO_TRANSCRIPTION_MAX_TOKENS") or 4096))
     parser.add_argument("--skip-video-vision", action="store_true")
+    parser.add_argument(
+        "--video-vision-provider",
+        default=os.getenv("VIDEO_VISION_PROVIDER") or "auto",
+        choices=["auto", "openai", "databricks", "none"],
+        help="Video frame vision provider. Databricks-only mode maps auto to databricks.",
+    )
+    parser.add_argument("--video-vision-model", default=os.getenv("DATABRICKS_VISION_ENDPOINT") or os.getenv("OPENAI_VISION_MODEL") or "")
     parser.add_argument("--ocr-workers", type=int, default=int(os.getenv("VIDEO_OCR_WORKERS") or 2))
     parser.add_argument("--vision-workers", type=int, default=int(os.getenv("VIDEO_VISION_WORKERS") or 2))
     parser.add_argument("--vision-timeout-seconds", type=int, default=int(os.getenv("VIDEO_VISION_TIMEOUT_SECONDS") or 120))
+    parser.add_argument("--enable-medallion", action="store_true", help="Write Bronze/Silver/Gold Delta tables in Unity Catalog.")
+    parser.add_argument("--medallion-required", action="store_true", help="Fail ingestion when medallion Delta writes cannot be initialized.")
+    parser.add_argument("--medallion-catalog", default=os.getenv("MEDALLION_CATALOG") or "insight-copilot")
+    parser.add_argument("--medallion-bronze-schema", default=os.getenv("MEDALLION_BRONZE_SCHEMA") or "bronze")
+    parser.add_argument("--medallion-silver-schema", default=os.getenv("MEDALLION_SILVER_SCHEMA") or "silver")
+    parser.add_argument("--medallion-gold-schema", default=os.getenv("MEDALLION_GOLD_SCHEMA") or "gold")
+    parser.add_argument("--medallion-bronze-table", default=os.getenv("MEDALLION_BRONZE_TABLE") or "insight_copilot_raw_files")
+    parser.add_argument("--medallion-silver-table", default=os.getenv("MEDALLION_SILVER_TABLE") or "insight_copilot_extracted_content")
+    parser.add_argument("--medallion-gold-table", default=os.getenv("MEDALLION_GOLD_TABLE") or "insight_copilot_rag_chunks")
     args = parser.parse_args()
 
     try:
