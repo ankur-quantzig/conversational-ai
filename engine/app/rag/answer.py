@@ -5,7 +5,7 @@ import time
 from copy import deepcopy
 from hashlib import sha256
 from threading import RLock
-from typing import Any
+from typing import Any, Literal
 
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -18,6 +18,11 @@ from app.rag.prompt_store import prompt_text
 
 DEFAULT_ANSWER_MODEL = "gpt-4.1-mini"
 CACHE_TTL_SECONDS = 300
+INSUFFICIENT_EVIDENCE_MESSAGE = (
+    "I could not find enough information about this in the indexed documents/videos. "
+    "Can you specify the document, video, or topic?"
+)
+DEFAULT_CLARIFICATION_QUESTION = "Can you clarify which document, video, or topic you want me to focus on?"
 
 
 class AnswerCitation(BaseModel):
@@ -53,6 +58,17 @@ class ConversationQuestionPlan(BaseModel):
     is_follow_up: bool = Field(description="True when the latest question depends on the prior conversation.")
     standalone_question: str = Field(description="Original question or a rewritten standalone follow-up question.")
     reason: str = Field(description="Brief reason for the classification.")
+
+
+class QuestionPreparation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["ready", "needs_clarification"] = Field(description="Whether retrieval can run now.")
+    rephrased_question: str = Field(description="Grammar-correct, retrieval-ready question when status is ready.")
+    clarification_question: str = Field(default="", description="Single user-facing clarification question when status is needs_clarification.")
+    issue: Literal["none", "grammar", "confusing", "vague"] = Field(description="Primary question quality issue.")
+    confidence_score: float = Field(ge=0.0, le=1.0, description="Confidence in this preparation decision.")
+    reason: str = Field(description="Brief reason for the preparation decision.")
 
 
 class ResponseDiagram(BaseModel):
@@ -112,6 +128,11 @@ def follow_up_schema() -> dict[str, Any]:
 
 def conversation_question_schema() -> dict[str, Any]:
     schema = ConversationQuestionPlan.model_json_schema()
+    return require_all_properties(schema)
+
+
+def question_preparation_schema() -> dict[str, Any]:
+    schema = QuestionPreparation.model_json_schema()
     return require_all_properties(schema)
 
 
@@ -278,6 +299,38 @@ def parse_conversation_question_plan(text: str) -> ConversationQuestionPlan:
         raise
 
 
+def parse_question_preparation(text: str) -> QuestionPreparation:
+    try:
+        return QuestionPreparation.model_validate_json(text)
+    except ValidationError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            return QuestionPreparation.model_validate_json(text[start : end + 1])
+        raise
+
+
+def normalize_question_preparation(plan: QuestionPreparation, fallback_question: str) -> QuestionPreparation:
+    fallback_question = " ".join(fallback_question.strip().split())
+    plan.rephrased_question = " ".join(plan.rephrased_question.strip().split()) or fallback_question
+    plan.clarification_question = " ".join(plan.clarification_question.strip().split())
+    plan.reason = " ".join(plan.reason.strip().split())
+
+    if plan.status == "ready":
+        plan.clarification_question = ""
+        if not plan.rephrased_question:
+            plan.rephrased_question = fallback_question
+        return plan
+
+    if not plan.clarification_question:
+        plan.clarification_question = DEFAULT_CLARIFICATION_QUESTION
+    if not plan.clarification_question.endswith("?"):
+        plan.clarification_question = f"{plan.clarification_question.rstrip('.')}?"
+    if not plan.rephrased_question:
+        plan.rephrased_question = fallback_question
+    return plan
+
+
 def plan_conversation_question(question: str, history: list[dict[str, Any]], model: str | None = None) -> ConversationQuestionPlan:
     cleaned_question = " ".join(question.strip().split())
     if not history:
@@ -331,6 +384,62 @@ def plan_conversation_question(question: str, history: list[dict[str, Any]], mod
     return plan
 
 
+def prepare_retrieval_question(question: str, model: str | None = None) -> QuestionPreparation:
+    cleaned_question = " ".join(question.strip().split())
+    if len(cleaned_question) < 3:
+        return QuestionPreparation(
+            status="needs_clarification",
+            rephrased_question=cleaned_question,
+            clarification_question=DEFAULT_CLARIFICATION_QUESTION,
+            issue="vague",
+            confidence_score=1.0,
+            reason="The question is too short to identify a retrieval intent.",
+        )
+
+    load_dotenv_file()
+    key = cache_key("question_preparation", {"provider": llm_provider(), "model": model, "question": cleaned_question})
+    cached = _llm_cache.get(key)
+    if cached is not None:
+        return QuestionPreparation.model_validate(cached)
+
+    schema = json.dumps(question_preparation_schema(), indent=2)
+    user_prompt = prompt_text("dynamic", "question_preparation", "human", question=cleaned_question, schema=schema)
+    system_prompt = prompt_text("static", "question_preparation", "system")
+    if llm_provider() == "databricks":
+        content = chat_completion(
+            endpoint=model or databricks_chat_endpoint(),
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.0,
+            max_tokens=500,
+        )
+        plan = parse_question_preparation(content)
+    else:
+        client = OpenAI(api_key=env_value("OPENAI_API_KEY", "OPANAI_API_KEY"))
+        response = client.responses.create(
+            model=model or env_value("OPENAI_ANSWER_MODEL") or DEFAULT_ANSWER_MODEL,
+            input=[
+                {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
+                {"role": "user", "content": [{"type": "input_text", "text": user_prompt}]},
+            ],
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "question_preparation",
+                    "schema": question_preparation_schema(),
+                    "strict": True,
+                }
+            },
+        )
+        plan = parse_question_preparation(response.output_text)
+
+    plan = normalize_question_preparation(plan, fallback_question=cleaned_question)
+    _llm_cache.set(key, plan.model_dump())
+    return plan
+
+
 def parse_response_diagram(text: str) -> ResponseDiagram:
     try:
         return ResponseDiagram.model_validate_json(text)
@@ -342,8 +451,17 @@ def parse_response_diagram(text: str) -> ResponseDiagram:
         raise
 
 
+def is_unsupported_answer(answer: str) -> bool:
+    normalized = answer.strip().lower()
+    return (
+        not normalized
+        or "unable to generate" in normalized
+        or "could not find enough information" in normalized
+    )
+
+
 def generate_response_diagram(question: str, answer: str, results: list[dict[str, Any]], model: str | None = None) -> ResponseDiagram:
-    if not answer.strip() or "unable to generate" in answer.lower():
+    if is_unsupported_answer(answer):
         return ResponseDiagram(should_show=False, title="", diagram_type="", code="", reason="No supported answer.")
 
     load_dotenv_file()
@@ -398,7 +516,7 @@ def generate_response_diagram(question: str, answer: str, results: list[dict[str
 
 
 def generate_follow_up_questions(question: str, answer: str, results: list[dict[str, Any]], model: str | None = None) -> list[str]:
-    if not answer.strip() or "unable to generate" in answer.lower():
+    if is_unsupported_answer(answer):
         return []
     load_dotenv_file()
     key = cache_key("follow_up_questions", {"provider": llm_provider(), "model": model, "question": question, "answer": answer, "results": results[:4]})

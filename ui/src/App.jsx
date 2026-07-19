@@ -707,6 +707,7 @@ function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry
     checking_access: 'Checking',
     guardrail_check: 'Checking',
     question_analysis: 'Context',
+    question_rephrasing: 'Rephrasing',
     question_ready: 'Context',
     creating_subquestions: 'Planning',
     subquestions_ready: 'Planning',

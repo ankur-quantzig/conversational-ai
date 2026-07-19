@@ -33,7 +33,13 @@ from app.config import (
 )
 from app.clients.lancedb_store import DEFAULT_TABLE_NAME, open_table
 from app.db.postgres import get_connection, init_db, wait_for_database
-from app.rag.answer import generate_follow_up_questions, plan_conversation_question
+from app.rag.answer import (
+    DEFAULT_CLARIFICATION_QUESTION,
+    QuestionPreparation,
+    generate_follow_up_questions,
+    plan_conversation_question,
+    prepare_retrieval_question,
+)
 from app.security.audit import log_audit_event
 from app.security.auth import UserContext, current_user, ensure_document_access, require_role
 from app.security.guardrails import QuerySecurityResult, classify_query
@@ -189,6 +195,107 @@ def analyze_question_for_turn(question: str, history: list[dict[str, Any]]) -> t
             "effective_question": question,
             "reason": f"Question classifier unavailable: {type(exc).__name__}",
         }
+
+
+def safe_prepare_retrieval_question(question: str) -> tuple[str, dict[str, Any]]:
+    cleaned_question = " ".join(question.strip().split())
+    try:
+        plan = prepare_retrieval_question(cleaned_question)
+    except Exception as exc:
+        plan = QuestionPreparation(
+            status="ready",
+            rephrased_question=cleaned_question,
+            clarification_question="",
+            issue="none",
+            confidence_score=0.0,
+            reason=f"Question preparation unavailable: {type(exc).__name__}",
+        )
+    payload = plan.model_dump()
+    return plan.rephrased_question, payload
+
+
+def prepare_question_for_answering(question: str, history: list[dict[str, Any]]) -> tuple[str, dict[str, Any]]:
+    standalone_question, question_analysis = analyze_question_for_turn(question, history)
+    retrieval_question, preparation = safe_prepare_retrieval_question(standalone_question)
+    question_analysis["question_preparation"] = preparation
+    question_analysis["standalone_question"] = standalone_question
+    question_analysis["effective_question"] = retrieval_question
+    return retrieval_question, question_analysis
+
+
+def question_needs_clarification(question_analysis: dict[str, Any]) -> bool:
+    preparation = question_analysis.get("question_preparation") or {}
+    return preparation.get("status") == "needs_clarification"
+
+
+def clarification_answer(question_analysis: dict[str, Any]) -> str:
+    preparation = question_analysis.get("question_preparation") or {}
+    answer = str(preparation.get("clarification_question") or "").strip()
+    return answer or DEFAULT_CLARIFICATION_QUESTION
+
+
+def build_clarification_chat_response(
+    *,
+    session_id: str,
+    title: str,
+    user: UserContext,
+    chat_request: ChatRequest,
+    question: str,
+    effective_top_k: int,
+    question_analysis: dict[str, Any],
+    security: QuerySecurityResult,
+    quota: dict[str, int | None],
+    started_at: float,
+    request_id: str,
+) -> ChatResponse:
+    answer = clarification_answer(question_analysis)
+    elapsed_ms = elapsed_ms_since(started_at)
+    assistant_message_id = persist_chat_turn(
+        session_id=session_id,
+        title=title,
+        user=user,
+        question=question,
+        answer=answer,
+        user_metadata={"doc_id": chat_request.doc_id, "source_type": chat_request.source_type, "top_k": effective_top_k},
+        assistant_metadata={
+            "sources": [],
+            "mode": "needs_clarification",
+            "confidence": "needs_clarification",
+            "confidence_score": 0.0,
+            "citations": [],
+            "follow_up_questions": [],
+            "diagram": {},
+            "question_analysis": question_analysis,
+            "heading": "",
+            "missing_information": "",
+            "security": {**security.model_dump(), "quota": quota},
+            "elapsed_ms": elapsed_ms,
+        },
+        existing_session=bool(chat_request.session_id),
+    )
+    log_audit_event(
+        "chat_needs_clarification",
+        user=user,
+        request_id=request_id,
+        metadata={"session_id": session_id, "message_id": assistant_message_id, "question_analysis": question_analysis},
+    )
+    return ChatResponse(
+        session_id=session_id,
+        message_id=assistant_message_id,
+        request_id=request_id,
+        heading="",
+        answer=answer,
+        sources=[],
+        mode="needs_clarification",
+        confidence="needs_clarification",
+        confidence_score=0.0,
+        citations=[],
+        follow_up_questions=[],
+        diagram={},
+        question_analysis=question_analysis,
+        security={**security.model_dump(), "quota": quota},
+        elapsed_ms=elapsed_ms,
+    )
 
 
 def answer_deltas(answer: str, chunk_size: int = 8):
@@ -496,7 +603,22 @@ def chat(chat_request: ChatRequest, request: Request, user: UserContext = Depend
         )
 
     history = conversation_history(chat_request.session_id, user)
-    effective_question, question_analysis = analyze_question_for_turn(question, history)
+    effective_question, question_analysis = prepare_question_for_answering(question, history)
+    if question_needs_clarification(question_analysis):
+        return build_clarification_chat_response(
+            session_id=session_id,
+            title=title,
+            user=user,
+            chat_request=chat_request,
+            question=question,
+            effective_top_k=effective_top_k,
+            question_analysis=question_analysis,
+            security=security,
+            quota=quota,
+            started_at=started_at,
+            request_id=request_id,
+        )
+
     rag_response = answer_question(
         question=effective_question,
         top_k=effective_top_k,
@@ -640,7 +762,12 @@ def chat_stream(chat_request: ChatRequest, request: Request, user: UserContext =
 
             yield sse_event("progress", {"stage": "question_analysis", "message": "Checking conversation context", "metadata": {}, "request_id": request_id})
             history = conversation_history(chat_request.session_id, user)
-            effective_question, question_analysis = analyze_question_for_turn(question, history)
+            standalone_question, question_analysis = analyze_question_for_turn(question, history)
+            yield sse_event("progress", {"stage": "question_rephrasing", "message": "Rephrasing question for retrieval", "metadata": {}, "request_id": request_id})
+            effective_question, preparation = safe_prepare_retrieval_question(standalone_question)
+            question_analysis["question_preparation"] = preparation
+            question_analysis["standalone_question"] = standalone_question
+            question_analysis["effective_question"] = effective_question
             yield sse_event(
                 "progress",
                 {
@@ -649,10 +776,33 @@ def chat_stream(chat_request: ChatRequest, request: Request, user: UserContext =
                     "metadata": {
                         "is_follow_up": question_analysis.get("is_follow_up"),
                         "effective_question": effective_question,
+                        "question_preparation": question_analysis.get("question_preparation", {}),
                     },
                     "request_id": request_id,
                 },
             )
+            if question_needs_clarification(question_analysis):
+                response = build_clarification_chat_response(
+                    session_id=session_id,
+                    title=title,
+                    user=user,
+                    chat_request=chat_request,
+                    question=question,
+                    effective_top_k=effective_top_k,
+                    question_analysis=question_analysis,
+                    security=security,
+                    quota=quota,
+                    started_at=started_at,
+                    request_id=request_id,
+                )
+                yield sse_event("status", {"stage": "writing", "message": "", "request_id": request_id})
+                for delta in answer_deltas(response.answer):
+                    yield sse_event("answer_delta", {"delta": delta, "request_id": request_id})
+                    time.sleep(0.025)
+                yield sse_event("progress", {"stage": "complete", "message": "Response ready", "metadata": {}, "request_id": request_id})
+                yield sse_event("status", {"stage": "final_response", "message": "Final response", "request_id": request_id})
+                yield sse_event("final", response.model_dump())
+                return
 
             source_type = None if chat_request.source_type in (None, "", "all") else chat_request.source_type
             rag_response = None

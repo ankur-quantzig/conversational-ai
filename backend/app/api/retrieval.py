@@ -13,7 +13,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Callable
 
-from app.rag.answer import RagAnswer, answer_question_structured
+from app.rag.answer import INSUFFICIENT_EVIDENCE_MESSAGE, RagAnswer, answer_question_structured
 from app.rag.retriever import lancedb_retrieve
 from app.config import answer_confidence_threshold, databricks_embedding_endpoint, llm_provider
 from app.utils.files import output_dir
@@ -387,10 +387,11 @@ def fallback_heading(question: str, sources: list[dict[str, Any]]) -> str:
     return ""
 
 
-def unavailable_response(mode: str = "unavailable", confidence: str = "low") -> dict[str, Any]:
+def unavailable_response(mode: str = "unavailable", confidence: str = "low", answer: str | None = None) -> dict[str, Any]:
+    user_answer = answer or (INSUFFICIENT_EVIDENCE_MESSAGE if mode == "insufficient_evidence" else UNABLE_TO_GENERATE_MESSAGE)
     return {
         "heading": "",
-        "answer": UNABLE_TO_GENERATE_MESSAGE,
+        "answer": user_answer,
         "sources": [],
         "mode": mode,
         "confidence": confidence,
@@ -401,7 +402,10 @@ def unavailable_response(mode: str = "unavailable", confidence: str = "low") -> 
 
 
 def structured_answer_is_usable(answer: RagAnswer) -> bool:
-    if answer.answer.strip() == UNABLE_TO_GENERATE_MESSAGE:
+    normalized_answer = answer.answer.strip().lower()
+    if normalized_answer in {UNABLE_TO_GENERATE_MESSAGE.lower(), INSUFFICIENT_EVIDENCE_MESSAGE.lower()}:
+        return False
+    if "could not find enough information" in normalized_answer:
         return False
     if answer.missing_information.strip():
         return False
@@ -458,13 +462,10 @@ def answer_with_fallback(
                 "confidence_score": structured_answer.confidence_score,
                 "citations": [citation.model_dump() for citation in structured_answer.citations],
                 "missing_information": structured_answer.missing_information,
-            } if structured_answer_is_usable(structured_answer) else unavailable_response(
-                mode="insufficient_evidence",
-                confidence=structured_answer.confidence,
-            )
+            } if structured_answer_is_usable(structured_answer) else unavailable_response(mode="insufficient_evidence", confidence=structured_answer.confidence)
         except Exception as structured_exc:
             logger.exception("Keyword answer generation failed: %s", structured_exc)
-    return unavailable_response(mode="keyword", confidence="low" if error else "medium")
+    return unavailable_response(mode="insufficient_evidence", confidence="low" if error else "medium")
 
 
 def answer_question(
