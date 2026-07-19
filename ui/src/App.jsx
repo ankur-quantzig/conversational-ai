@@ -202,6 +202,7 @@ function numericTime(value) {
 function VideoClipPlayer({ source }) {
   const videoRef = useRef(null)
   const [hasPlaybackError, setHasPlaybackError] = useState(false)
+  const [playbackMode, setPlaybackMode] = useState('clip')
   const isVideo = isVideoSource(source)
   const encodedDocId = source.doc_id ? encodeURIComponent(source.doc_id) : ''
   const start = numericTime(source.start_time ?? source.metadata?.start_time) ?? 0
@@ -211,25 +212,42 @@ function VideoClipPlayer({ source }) {
   const endLabel = source.end_time_label ?? source.metadata?.end_time_label ?? (hasEnd ? formatVideoTime(end) : '')
   const clipLabel = endLabel ? `${startLabel} - ${endLabel}` : `From ${startLabel}`
   const timeFragment = `#t=${start}${hasEnd ? `,${end}` : ''}`
-  const videoUrl = encodedDocId ? `${API_BASE_URL}/media/videos/${encodedDocId}${timeFragment}` : ''
+  const clipUrl =
+    encodedDocId && hasEnd
+      ? `${API_BASE_URL}/media/video-clips/${encodedDocId}?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`
+      : ''
+  const fullVideoUrl = encodedDocId ? `${API_BASE_URL}/media/videos/${encodedDocId}${timeFragment}` : ''
+  const videoUrl = playbackMode === 'clip' && clipUrl ? clipUrl : fullVideoUrl
 
   useEffect(() => {
+    setPlaybackMode(clipUrl ? 'clip' : 'full')
     setHasPlaybackError(false)
-  }, [videoUrl])
+  }, [clipUrl, fullVideoUrl])
 
   if (!isVideo || !source.doc_id) return null
 
   function handleLoadedMetadata(event) {
+    if (playbackMode !== 'full') return
     if (start > 0 && Math.abs(event.currentTarget.currentTime - start) > 1) {
       event.currentTarget.currentTime = start
     }
   }
 
   function handleTimeUpdate(event) {
+    if (playbackMode !== 'full') return
     if (!hasEnd) return
     if (event.currentTarget.currentTime >= end) {
       event.currentTarget.pause()
     }
+  }
+
+  function handlePlaybackError() {
+    if (playbackMode === 'clip' && fullVideoUrl) {
+      setPlaybackMode('full')
+      setHasPlaybackError(false)
+      return
+    }
+    setHasPlaybackError(true)
   }
 
   return (
@@ -239,13 +257,14 @@ function VideoClipPlayer({ source }) {
         <strong>{clipLabel}</strong>
       </div>
       <video
+        key={videoUrl}
         ref={videoRef}
         controls
         preload="metadata"
         src={videoUrl}
         onLoadedMetadata={handleLoadedMetadata}
         onTimeUpdate={handleTimeUpdate}
-        onError={() => setHasPlaybackError(true)}
+        onError={handlePlaybackError}
       />
       {hasPlaybackError ? (
         <div className="video-clip__error" role="status">

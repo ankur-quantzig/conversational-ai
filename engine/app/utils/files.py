@@ -29,6 +29,8 @@ def output_dir(*parts: str) -> Path:
         or os.getenv("OUTPUT_ROOT")
     )
     root = Path(configured).expanduser() if configured else ROOT / "output"
+    if configured and not root.is_absolute():
+        root = ROOT / root
     return root.joinpath(*parts)
 
 
