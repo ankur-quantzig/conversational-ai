@@ -142,6 +142,11 @@ def databricks_embedding_endpoint() -> str:
     return env_value("DATABRICKS_EMBEDDING_ENDPOINT") or "databricks-bge-large-en"
 
 
+def databricks_transcription_endpoint() -> str:
+    load_dotenv_file()
+    return env_value("DATABRICKS_TRANSCRIPTION_ENDPOINT") or "databricks-gemini-3-5-flash"
+
+
 def guardrail_model() -> str:
     load_dotenv_file()
     return env_value("OPENAI_GUARDRAIL_MODEL")

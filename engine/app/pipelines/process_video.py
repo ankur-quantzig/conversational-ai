@@ -17,7 +17,15 @@ def main() -> None:
     parser.add_argument("input", type=Path, help="Video file or directory of videos.")
     parser.add_argument("--frame-interval-seconds", type=float, default=5.0)
     parser.add_argument("--chunk-window-seconds", type=float, default=30.0)
-    parser.add_argument("--skip-transcription", action="store_true", help="Skip OpenAI audio transcription.")
+    parser.add_argument("--skip-transcription", action="store_true", help="Skip audio transcription.")
+    parser.add_argument(
+        "--transcription-provider",
+        default="auto",
+        choices=["auto", "openai", "databricks", "none"],
+        help="Audio transcription provider. In auto mode, Databricks LLM_PROVIDER uses Databricks audio.",
+    )
+    parser.add_argument("--audio-segment-seconds", type=float, default=600.0, help="Chunk audio before Databricks transcription.")
+    parser.add_argument("--transcription-max-tokens", type=int, default=4096, help="Max output tokens per audio transcription segment.")
     parser.add_argument("--skip-vision", action="store_true", help="Skip OpenAI frame visual summaries.")
     parser.add_argument("--embed", action="store_true", help="Embed the generated chunks.")
     parser.add_argument("--rebuild-index", action="store_true", help="Rebuild LanceDB from all embedded files after embedding.")
@@ -73,6 +81,9 @@ def process_one_video(index: int, total: int, video_path: Path, args: argparse.N
         frame_interval_seconds=args.frame_interval_seconds,
         chunk_window_seconds=args.chunk_window_seconds,
         skip_transcription=args.skip_transcription,
+        transcription_provider=args.transcription_provider,
+        audio_segment_seconds=args.audio_segment_seconds,
+        transcription_max_tokens=args.transcription_max_tokens,
         skip_vision=args.skip_vision,
         ocr_workers=max(1, args.ocr_workers),
         vision_workers=max(1, args.vision_workers),

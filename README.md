@@ -87,9 +87,10 @@ Databricks hosting uses:
 LLM_PROVIDER=databricks
 DATABRICKS_CHAT_ENDPOINT=databricks-claude-sonnet-4
 DATABRICKS_EMBEDDING_ENDPOINT=databricks-bge-large-en
+DATABRICKS_TRANSCRIPTION_ENDPOINT=databricks-gemini-3-5-flash
 ```
 
-This removes the need for `OPENAI_API_KEY` for chat answers and query embeddings. The serving endpoint names must exist in your Databricks workspace.
+This removes the need for `OPENAI_API_KEY` for chat answers, query embeddings, and scheduled video audio transcription. The serving endpoint names must exist in your Databricks workspace.
 
 ## RAG pipeline
 
@@ -138,14 +139,15 @@ OPENAI_EMBEDDING_DIMENSIONS=3072
 Videos are processed into timestamped multimodal chunks:
 
 ```text
-video -> audio transcript -> sampled frames -> Azure DI frame OCR -> vision summaries -> timestamped chunks -> embeddings -> LanceDB
+video -> audio transcript -> sampled frames -> Azure DI frame OCR -> optional vision summaries -> timestamped chunks -> embeddings -> LanceDB
 ```
 
 Requirements:
 
 - `ffmpeg` and `ffprobe` available on the machine, or use the API Docker image.
 - Azure Document Intelligence env vars for frame OCR.
-- `OPENAI_API_KEY` for transcription, frame visual summaries, embeddings, and final answers.
+- Databricks deployment uses `DATABRICKS_TRANSCRIPTION_ENDPOINT` for spoken audio, `DATABRICKS_EMBEDDING_ENDPOINT` for embeddings, and skips OpenAI frame visual summaries by default.
+- Local OpenAI mode can still use `OPENAI_API_KEY` for transcription, frame visual summaries, embeddings, and final answers.
 
 Process every video in `data/Videos`, embed the chunks, and rebuild LanceDB:
 

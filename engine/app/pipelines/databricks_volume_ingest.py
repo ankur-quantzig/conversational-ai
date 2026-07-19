@@ -46,7 +46,9 @@ SECRET_ENV_KEYS = [
     "DATABRICKS_TOKEN",
     "DATABRICKS_CHAT_ENDPOINT",
     "DATABRICKS_EMBEDDING_ENDPOINT",
+    "DATABRICKS_TRANSCRIPTION_ENDPOINT",
     "LLM_PROVIDER",
+    "VIDEO_TRANSCRIPTION_PROVIDER",
     "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT",
     "AZURE_DOCUMENT_INTELLIGENCE_KEY",
 ]
@@ -196,7 +198,8 @@ def apply_model_mode(args: argparse.Namespace) -> None:
         return
     os.environ["LLM_PROVIDER"] = "databricks"
     args.skip_pdf_vision = True
-    args.skip_video_transcription = True
+    if args.video_transcription_provider == "auto":
+        args.video_transcription_provider = "databricks"
     args.skip_video_vision = True
     for key in OPENAI_ENV_KEYS:
         os.environ.pop(key, None)
@@ -275,6 +278,9 @@ def process_video_file(source_path: Path, args: argparse.Namespace) -> dict[str,
         frame_interval_seconds=args.frame_interval_seconds,
         chunk_window_seconds=args.chunk_window_seconds,
         skip_transcription=args.skip_video_transcription,
+        transcription_provider=args.video_transcription_provider,
+        audio_segment_seconds=args.audio_segment_seconds,
+        transcription_max_tokens=args.transcription_max_tokens,
         skip_vision=args.skip_video_vision,
         ocr_workers=args.ocr_workers,
         vision_workers=args.vision_workers,
@@ -502,12 +508,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         provider = os.getenv("LLM_PROVIDER", "")
         chat_endpoint = os.getenv("DATABRICKS_CHAT_ENDPOINT", "")
         embedding_endpoint = os.getenv("DATABRICKS_EMBEDDING_ENDPOINT", "")
+        transcription_endpoint = os.getenv("DATABRICKS_TRANSCRIPTION_ENDPOINT", "")
         try:
-            from app.config import databricks_chat_endpoint, databricks_embedding_endpoint, llm_provider
+            from app.config import (
+                databricks_chat_endpoint,
+                databricks_embedding_endpoint,
+                databricks_transcription_endpoint,
+                llm_provider,
+            )
 
             provider = llm_provider()
             chat_endpoint = databricks_chat_endpoint()
             embedding_endpoint = databricks_embedding_endpoint()
+            transcription_endpoint = databricks_transcription_endpoint()
         except Exception as exc:
             config_error = f"{type(exc).__name__}: {exc}"
         try:
@@ -524,6 +537,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "databricks_models_only": args.databricks_models_only,
                 "databricks_chat_endpoint": chat_endpoint,
                 "databricks_embedding_endpoint": embedding_endpoint,
+                "databricks_transcription_endpoint": transcription_endpoint,
+                "video_transcription_provider": args.video_transcription_provider,
+                "audio_segment_seconds": args.audio_segment_seconds,
                 "skip_pdf_vision": args.skip_pdf_vision,
                 "skip_video_transcription": args.skip_video_transcription,
                 "skip_video_vision": args.skip_video_vision,
@@ -544,6 +560,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "DATABRICKS_HOST": bool(os.getenv("DATABRICKS_HOST")),
                 "DATABRICKS_TOKEN": bool(os.getenv("DATABRICKS_TOKEN")),
                 "DATABRICKS_RUNTIME_AUTH": bool(runtime_host and runtime_token),
+                "DATABRICKS_TRANSCRIPTION_ENDPOINT": bool(os.getenv("DATABRICKS_TRANSCRIPTION_ENDPOINT")),
                 "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT": bool(os.getenv("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT")),
                 "AZURE_DOCUMENT_INTELLIGENCE_KEY": bool(os.getenv("AZURE_DOCUMENT_INTELLIGENCE_KEY")),
                 "OPENAI_API_KEY": bool(os.getenv("OPENAI_API_KEY")),
@@ -669,7 +686,15 @@ def main() -> None:
     parser.add_argument("--pdf-vision-model", default=os.getenv("OPENAI_VISION_MODEL") or "gpt-4o-mini")
     parser.add_argument("--frame-interval-seconds", type=float, default=float(os.getenv("VIDEO_FRAME_INTERVAL_SECONDS") or 5.0))
     parser.add_argument("--chunk-window-seconds", type=float, default=float(os.getenv("VIDEO_CHUNK_WINDOW_SECONDS") or 30.0))
-    parser.add_argument("--skip-video-transcription", action="store_true", help="Skip OpenAI audio transcription and rely on visual OCR.")
+    parser.add_argument("--skip-video-transcription", action="store_true", help="Skip audio transcription and rely on visual OCR.")
+    parser.add_argument(
+        "--video-transcription-provider",
+        default=os.getenv("VIDEO_TRANSCRIPTION_PROVIDER") or "auto",
+        choices=["auto", "openai", "databricks", "none"],
+        help="Audio transcription provider. Databricks-only mode maps auto to databricks.",
+    )
+    parser.add_argument("--audio-segment-seconds", type=float, default=float(os.getenv("VIDEO_AUDIO_SEGMENT_SECONDS") or 600.0))
+    parser.add_argument("--transcription-max-tokens", type=int, default=int(os.getenv("VIDEO_TRANSCRIPTION_MAX_TOKENS") or 4096))
     parser.add_argument("--skip-video-vision", action="store_true")
     parser.add_argument("--ocr-workers", type=int, default=int(os.getenv("VIDEO_OCR_WORKERS") or 2))
     parser.add_argument("--vision-workers", type=int, default=int(os.getenv("VIDEO_VISION_WORKERS") or 2))

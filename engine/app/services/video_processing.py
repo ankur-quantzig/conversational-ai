@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import os
 import re
 import shutil
@@ -18,7 +19,9 @@ from typing import Any
 from openai import OpenAI
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from app.clients.databricks_model_serving import transcribe_audio as databricks_transcribe_audio
 from app.clients.document_intelligence import client_from_env, env_value, load_dotenv_file
+from app.config import databricks_transcription_endpoint, llm_provider
 from app.rag.answer import require_all_properties
 from app.services.chunk_document import estimate_tokens, slugify, stable_id, write_jsonl
 from app.services.extract_layout import normalize_di_result
@@ -29,6 +32,8 @@ from app.utils.logging import dump_json
 DEFAULT_FRAME_INTERVAL_SECONDS = 5.0
 DEFAULT_CHUNK_WINDOW_SECONDS = 30.0
 DEFAULT_TRANSCRIPTION_MODEL = "whisper-1"
+DEFAULT_AUDIO_SEGMENT_SECONDS = 600.0
+DEFAULT_TRANSCRIPTION_MAX_TOKENS = 4096
 DEFAULT_VISION_MODEL = "gpt-4.1-mini"
 DEFAULT_VISION_TIMEOUT_SECONDS = 120
 
@@ -221,8 +226,41 @@ def extract_frames(video_path: Path, frames_dir: Path, interval_seconds: float) 
     return frames
 
 
-def transcribe_audio(audio_path: Path, model: str | None = None) -> dict[str, Any]:
+def transcribe_audio(
+    audio_path: Path,
+    model: str | None = None,
+    provider: str | None = None,
+    duration_seconds: float = 0.0,
+    segment_seconds: float = DEFAULT_AUDIO_SEGMENT_SECONDS,
+    max_tokens: int = DEFAULT_TRANSCRIPTION_MAX_TOKENS,
+    checkpoint_path: Path | None = None,
+) -> dict[str, Any]:
     load_dotenv_file()
+    resolved_provider = resolve_transcription_provider(provider)
+    if resolved_provider == "databricks":
+        return transcribe_audio_with_databricks(
+            audio_path=audio_path,
+            model=model,
+            duration_seconds=duration_seconds,
+            segment_seconds=segment_seconds,
+            max_tokens=max_tokens,
+            checkpoint_path=checkpoint_path,
+        )
+    if resolved_provider == "openai":
+        return transcribe_audio_with_openai(audio_path, model=model)
+    raise RuntimeError(f"Unsupported video transcription provider: {resolved_provider}")
+
+
+def resolve_transcription_provider(provider: str | None = None) -> str:
+    configured = (provider or env_value("VIDEO_TRANSCRIPTION_PROVIDER") or "").strip().lower()
+    if configured in {"", "auto"}:
+        return "databricks" if llm_provider() == "databricks" else "openai"
+    if configured in {"skip", "none", "disabled"}:
+        return "none"
+    return configured
+
+
+def transcribe_audio_with_openai(audio_path: Path, model: str | None = None) -> dict[str, Any]:
     model = model or env_value("OPENAI_TRANSCRIPTION_MODEL") or DEFAULT_TRANSCRIPTION_MODEL
     client = OpenAI(api_key=env_value("OPENAI_API_KEY", "OPANAI_API_KEY"), timeout=180)
     with audio_path.open("rb") as handle:
@@ -244,7 +282,178 @@ def transcribe_audio(audio_path: Path, model: str | None = None) -> dict[str, An
         )
     if not segments and payload.get("text"):
         segments.append({"segment_index": 1, "start": 0.0, "end": 0.0, "text": payload["text"].strip()})
-    return {"model": model, "text": payload.get("text", ""), "segments": segments}
+    return {"provider": "openai", "model": model, "text": payload.get("text", ""), "segments": segments}
+
+
+def transcribe_audio_with_databricks(
+    audio_path: Path,
+    model: str | None = None,
+    duration_seconds: float = 0.0,
+    segment_seconds: float = DEFAULT_AUDIO_SEGMENT_SECONDS,
+    max_tokens: int = DEFAULT_TRANSCRIPTION_MAX_TOKENS,
+    checkpoint_path: Path | None = None,
+    retries: int = 3,
+) -> dict[str, Any]:
+    endpoint = model or databricks_transcription_endpoint()
+    segment_ranges = audio_segment_ranges(duration_seconds, segment_seconds)
+    payload = load_transcript_checkpoint(checkpoint_path, provider="databricks", model=endpoint)
+    completed = {int(segment.get("segment_index") or 0) for segment in payload.get("segments", [])}
+
+    with tempfile.TemporaryDirectory(prefix="insight-audio-segments-") as temporary_dir:
+        temporary_root = Path(temporary_dir)
+        for segment_index, start, end in segment_ranges:
+            if segment_index in completed:
+                continue
+            log_step(
+                f"Databricks audio transcription segment {segment_index}/{len(segment_ranges)} "
+                f"({format_time(start)}-{format_time(end)})"
+            )
+            if len(segment_ranges) == 1:
+                segment_path = audio_path
+            else:
+                segment_path = temporary_root / f"audio_segment_{segment_index:06d}.mp3"
+                extract_audio_slice(audio_path, segment_path, start_seconds=start, duration_seconds=max(1.0, end - start))
+            text = transcribe_databricks_segment(
+                segment_path=segment_path,
+                endpoint=endpoint,
+                max_tokens=max_tokens,
+                retries=retries,
+            )
+            if text:
+                payload.setdefault("segments", []).append(
+                    {
+                        "segment_index": segment_index,
+                        "start": round(start, 3),
+                        "end": round(end, 3),
+                        "text": text,
+                        "provider": "databricks",
+                    }
+                )
+            payload["text"] = "\n".join(segment["text"] for segment in sorted(payload.get("segments", []), key=segment_sort_key))
+            payload["segment_seconds"] = segment_seconds
+            payload["duration_seconds"] = duration_seconds
+            write_transcript_checkpoint(checkpoint_path, payload)
+
+    payload["segments"] = sorted(payload.get("segments", []), key=segment_sort_key)
+    payload["text"] = "\n".join(segment["text"] for segment in payload["segments"])
+    payload["provider"] = "databricks"
+    payload["model"] = endpoint
+    return payload
+
+
+def audio_segment_ranges(duration_seconds: float, segment_seconds: float) -> list[tuple[int, float, float]]:
+    segment_seconds = max(30.0, float(segment_seconds or DEFAULT_AUDIO_SEGMENT_SECONDS))
+    if duration_seconds <= 0:
+        return [(1, 0.0, segment_seconds)]
+    segment_count = max(1, math.ceil(duration_seconds / segment_seconds))
+    ranges = []
+    for index in range(segment_count):
+        start = index * segment_seconds
+        end = min(duration_seconds, start + segment_seconds)
+        if end > start:
+            ranges.append((index + 1, start, end))
+    return ranges or [(1, 0.0, duration_seconds)]
+
+
+def extract_audio_slice(audio_path: Path, segment_path: Path, start_seconds: float, duration_seconds: float) -> None:
+    ffmpeg = require_binary("ffmpeg")
+    segment_path.parent.mkdir(parents=True, exist_ok=True)
+    run_command(
+        [
+            ffmpeg,
+            "-y",
+            "-ss",
+            f"{max(0.0, start_seconds):.3f}",
+            "-t",
+            f"{max(1.0, duration_seconds):.3f}",
+            "-i",
+            str(audio_path),
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-b:a",
+            "32k",
+            str(segment_path),
+        ]
+    )
+    if not segment_path.exists() or segment_path.stat().st_size < 1024:
+        raise RuntimeError(f"Audio segment extraction produced an empty or incomplete file: {segment_path}")
+
+
+def transcribe_databricks_segment(segment_path: Path, endpoint: str, max_tokens: int, retries: int) -> str:
+    last_error: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            raw_text = databricks_transcribe_audio(segment_path, endpoint=endpoint, max_tokens=max_tokens)
+            return parse_transcript_text(raw_text)
+        except Exception as exc:
+            last_error = exc
+            if attempt == retries:
+                raise
+            delay = min(60, 2**attempt)
+            log_step(f"Databricks transcription retry {attempt}/{retries - 1} for {segment_path.name}: {exc}. Waiting {delay}s")
+            time.sleep(delay)
+    raise RuntimeError("Databricks transcription failed") from last_error
+
+
+def parse_transcript_text(raw_text: str) -> str:
+    cleaned = strip_json_fence(raw_text)
+    try:
+        payload = json.loads(cleaned)
+    except json.JSONDecodeError:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start >= 0 and end > start:
+            try:
+                payload = json.loads(cleaned[start : end + 1])
+            except json.JSONDecodeError:
+                payload = None
+        else:
+            payload = None
+    if isinstance(payload, dict):
+        if isinstance(payload.get("text"), str):
+            return normalize_transcript_whitespace(payload["text"])
+        segments = payload.get("segments")
+        if isinstance(segments, list):
+            values = [segment.get("text", "") for segment in segments if isinstance(segment, dict)]
+            return normalize_transcript_whitespace("\n".join(values))
+    return normalize_transcript_whitespace(cleaned)
+
+
+def strip_json_fence(text: str) -> str:
+    cleaned = str(text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    return cleaned.strip()
+
+
+def normalize_transcript_whitespace(text: str) -> str:
+    lines = [" ".join(line.split()) for line in str(text or "").splitlines()]
+    return "\n".join(line for line in lines if line).strip()
+
+
+def load_transcript_checkpoint(path: Path | None, provider: str, model: str) -> dict[str, Any]:
+    if path and path.exists():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            payload = {}
+        if payload.get("provider") == provider and payload.get("model") == model and isinstance(payload.get("segments"), list):
+            return payload
+    return {"provider": provider, "model": model, "text": "", "segments": []}
+
+
+def write_transcript_checkpoint(path: Path | None, payload: dict[str, Any]) -> None:
+    if not path:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(dump_json(payload), encoding="utf-8")
+
+
+def segment_sort_key(segment: dict[str, Any]) -> tuple[int, float]:
+    return int(segment.get("segment_index") or 0), float(segment.get("start") or 0.0)
 
 
 def ocr_frame_with_azure(frame_path: Path, model_id: str = "prebuilt-read", retries: int = 4) -> dict[str, Any]:
@@ -681,6 +890,9 @@ def process_video(
     frame_interval_seconds: float = DEFAULT_FRAME_INTERVAL_SECONDS,
     chunk_window_seconds: float = DEFAULT_CHUNK_WINDOW_SECONDS,
     skip_transcription: bool = False,
+    transcription_provider: str | None = None,
+    audio_segment_seconds: float = DEFAULT_AUDIO_SEGMENT_SECONDS,
+    transcription_max_tokens: int = DEFAULT_TRANSCRIPTION_MAX_TOKENS,
     skip_vision: bool = False,
     ocr_workers: int = 1,
     vision_workers: int = 1,
@@ -696,9 +908,12 @@ def process_video(
     log_step("Reading video metadata")
     metadata = probe_video(video_path)
     log_step(f"Duration {format_time(metadata.get('duration_seconds', 0))}")
-    if skip_transcription:
+    resolved_transcription_provider = resolve_transcription_provider(transcription_provider)
+    transcription_disabled = skip_transcription or resolved_transcription_provider == "none"
+    if transcription_disabled:
         log_step("Skipping audio transcription")
     else:
+        log_step(f"Audio transcription provider: {resolved_transcription_provider}")
         log_step(f"Extracting audio to {paths.audio}")
         if paths.audio.exists() and paths.audio.stat().st_size >= 1024:
             log_step(f"Using existing audio {paths.audio}")
@@ -718,19 +933,26 @@ def process_video(
     else:
         frames = extract_frames(video_path, paths.frames_dir, interval_seconds=frame_interval_seconds)
     log_step(f"Extracted {len(frames)} frames")
-    if skip_transcription:
+    if transcription_disabled:
         transcript = {
             "text": "",
             "segments": [],
             "skipped": True,
-            "reason": "audio transcription disabled for Databricks-only ingestion",
+            "reason": "audio transcription disabled for this ingestion run",
         }
     elif paths.transcript.exists():
         log_step(f"Using existing transcript {paths.transcript}")
         transcript = json.loads(paths.transcript.read_text(encoding="utf-8"))
     else:
         log_step("Transcribing audio")
-        transcript = transcribe_audio(paths.audio)
+        transcript = transcribe_audio(
+            paths.audio,
+            provider=resolved_transcription_provider,
+            duration_seconds=float(metadata.get("duration_seconds") or 0),
+            segment_seconds=audio_segment_seconds,
+            max_tokens=transcription_max_tokens,
+            checkpoint_path=paths.transcript,
+        )
         paths.transcript.write_text(dump_json(transcript), encoding="utf-8")
     log_step(f"Transcript segments: {len(transcript.get('segments', []))}")
     existing_ocr = load_frame_checkpoint(paths.frame_ocr)

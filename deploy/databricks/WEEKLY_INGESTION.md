@@ -8,7 +8,7 @@ This pipeline scans a Databricks Volume for new or updated files, processes only
 Databricks Volume input
   -> incremental manifest check
   -> PDF OCR/layout extraction
-  -> video frame OCR extraction
+  -> video audio transcription + frame OCR extraction
   -> plain text ingestion
   -> optional Office conversion to PDF when LibreOffice is available
   -> chunks
@@ -37,6 +37,8 @@ DATABRICKS_HOST=https://dbc-4d180757-761e.cloud.databricks.com
 DATABRICKS_TOKEN=<secret>
 DATABRICKS_CHAT_ENDPOINT=databricks-claude-sonnet-4
 DATABRICKS_EMBEDDING_ENDPOINT=databricks-bge-large-en
+DATABRICKS_TRANSCRIPTION_ENDPOINT=databricks-gemini-3-5-flash
+VIDEO_TRANSCRIPTION_PROVIDER=databricks
 DATABRICKS_DATA_VOLUME=/Volumes/<catalog>/<schema>/<input_volume>
 DATABRICKS_OUTPUT_VOLUME=/Volumes/<catalog>/<schema>/<output_volume>/insight-copilot-output
 AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=<secret or env>
@@ -45,7 +47,7 @@ AZURE_DOCUMENT_INTELLIGENCE_KEY=<secret>
 
 The app must also have `DATABRICKS_OUTPUT_VOLUME` set, otherwise it will read the packaged demo `output/` folder instead of the weekly pipeline output.
 
-The scheduled job uses `--databricks-models-only`, which forces `LLM_PROVIDER=databricks`, uses the Databricks embedding endpoint for chunks, and disables OpenAI-only ingestion steps. In this mode `OPENAI_API_KEY` is not required or used.
+The scheduled job uses `--databricks-models-only`, which forces `LLM_PROVIDER=databricks`, uses the Databricks embedding endpoint for chunks, uses the Databricks Gemini transcription endpoint for spoken video audio, and disables OpenAI-only ingestion steps. In this mode `OPENAI_API_KEY` is not required or used.
 
 For this workspace, the discovered managed Volume is:
 
@@ -57,7 +59,7 @@ DATABRICKS_OUTPUT_VOLUME=/Volumes/insight-copilot/bronze/shell-bronze-insight-co
 ## Supported Inputs
 
 - PDFs: Azure Document Intelligence OCR/layout extraction. OpenAI page vision is skipped in Databricks-only mode.
-- Videos: frame OCR and timestamped chunks. OpenAI audio transcription and frame vision are skipped in Databricks-only mode.
+- Videos: spoken audio transcription through `DATABRICKS_TRANSCRIPTION_ENDPOINT`, frame OCR, and timestamped chunks. Frame vision summaries are skipped in Databricks-only mode.
 - Text-like docs: `.txt`, `.md`, `.csv`, `.json`, `.jsonl`, `.html`, `.log`.
 - Office docs: `.docx`, `.pptx`, `.xlsx`, legacy Office files if `libreoffice` or `soffice` exists on the job cluster.
 
@@ -107,6 +109,8 @@ Expected diagnostic signals:
 llm_provider: databricks
 databricks_models_only: true
 databricks_embedding_endpoint: databricks-bge-large-en
+databricks_transcription_endpoint: databricks-gemini-3-5-flash
+video_transcription_provider: databricks
 DATABRICKS_RUNTIME_AUTH: true
 OPENAI_API_KEY: false
 ```
