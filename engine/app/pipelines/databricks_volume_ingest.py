@@ -55,6 +55,8 @@ SECRET_ENV_KEYS = [
     "LLM_PROVIDER",
     "VIDEO_TRANSCRIPTION_PROVIDER",
     "VIDEO_VISION_PROVIDER",
+    "QUALITY_ENRICHMENT_PROVIDER",
+    "QUALITY_ENRICHMENT_MODEL",
     "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT",
     "AZURE_DOCUMENT_INTELLIGENCE_KEY",
 ]
@@ -209,11 +211,15 @@ def apply_model_mode(args: argparse.Namespace) -> None:
         args.video_transcription_provider = "databricks"
     if args.video_vision_provider == "auto":
         args.video_vision_provider = "databricks"
+    if args.quality_provider == "auto":
+        args.quality_provider = "databricks"
     databricks_vision_model = os.getenv("DATABRICKS_VISION_ENDPOINT") or os.getenv("DATABRICKS_TRANSCRIPTION_ENDPOINT") or ""
     if args.pdf_vision_provider == "databricks" and (not args.pdf_vision_model or args.pdf_vision_model.startswith("gpt-")):
         args.pdf_vision_model = databricks_vision_model
     if args.video_vision_provider == "databricks" and not args.video_vision_model:
         args.video_vision_model = databricks_vision_model
+    if args.quality_provider == "databricks" and not args.quality_model:
+        args.quality_model = os.getenv("QUALITY_ENRICHMENT_MODEL") or os.getenv("DATABRICKS_CHAT_ENDPOINT") or ""
     for key in OPENAI_ENV_KEYS:
         os.environ.pop(key, None)
 
@@ -255,10 +261,19 @@ def convert_office_to_pdf(source_path: Path, converted_root: Path) -> Path:
     return converted_path
 
 
+def enrich_and_embed_chunks(raw_chunk_path: Path, args: argparse.Namespace) -> tuple[list[dict[str, Any]], Path, Path, Path, dict[str, Any]]:
+    from app.services.embed_chunks import embed_chunks_file
+    from app.services.quality_enrichment import QualityEnrichmentConfig, enrich_chunks_file
+
+    quality_config = QualityEnrichmentConfig.from_args(args)
+    chunks, quality_path, quality_summary_path, quality_summary = enrich_chunks_file(raw_chunk_path, config=quality_config)
+    _, embedded_path = embed_chunks_file(quality_path)
+    return chunks, quality_path, embedded_path, quality_summary_path, quality_summary
+
+
 def process_pdf_file(source_path: Path, args: argparse.Namespace) -> dict[str, Any]:
     from app.pipelines.process_pdf import analyze_pdf
     from app.services.chunk_document import chunk_document
-    from app.services.embed_chunks import embed_chunks_file
 
     payload = analyze_pdf(
         source_path,
@@ -270,24 +285,26 @@ def process_pdf_file(source_path: Path, args: argparse.Namespace) -> dict[str, A
     )
     di_json = Path(payload["document_intelligence_output"])
     mm_json = Path(payload["multimodal_output"])
-    chunks, chunk_path = chunk_document(di_json, mm_json)
-    _, embedded_path = embed_chunks_file(chunk_path)
+    _, raw_chunk_path = chunk_document(di_json, mm_json)
+    chunks, chunk_path, embedded_path, quality_summary_path, quality_summary = enrich_and_embed_chunks(raw_chunk_path, args)
     return {
         "kind": "pdf",
         "source": str(source_path),
         "document_intelligence_output": str(di_json),
         "multimodal_output": str(mm_json),
+        "raw_chunk_path": str(raw_chunk_path),
         "chunk_path": str(chunk_path),
         "embedded_path": str(embedded_path),
+        "quality_summary_path": str(quality_summary_path),
+        "quality": quality_summary,
         "chunks": len(chunks),
     }
 
 
 def process_video_file(source_path: Path, args: argparse.Namespace) -> dict[str, Any]:
-    from app.services.embed_chunks import embed_chunks_file
     from app.services.video_processing import process_video
 
-    chunks, chunk_path = process_video(
+    _, raw_chunk_path = process_video(
         video_path=source_path,
         frame_interval_seconds=args.frame_interval_seconds,
         chunk_window_seconds=args.chunk_window_seconds,
@@ -302,12 +319,15 @@ def process_video_file(source_path: Path, args: argparse.Namespace) -> dict[str,
         vision_workers=args.vision_workers,
         vision_timeout_seconds=args.vision_timeout_seconds,
     )
-    _, embedded_path = embed_chunks_file(chunk_path)
+    chunks, chunk_path, embedded_path, quality_summary_path, quality_summary = enrich_and_embed_chunks(raw_chunk_path, args)
     return {
         "kind": "video",
         "source": str(source_path),
+        "raw_chunk_path": str(raw_chunk_path),
         "chunk_path": str(chunk_path),
         "embedded_path": str(embedded_path),
+        "quality_summary_path": str(quality_summary_path),
+        "quality": quality_summary,
         "chunks": len(chunks),
     }
 
@@ -318,9 +338,7 @@ def read_text_file(path: Path, max_bytes: int = 20 * 1024 * 1024) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
-def process_text_file(source_path: Path) -> dict[str, Any]:
-    from app.services.embed_chunks import embed_chunks_file
-
+def process_text_file(source_path: Path, args: argparse.Namespace) -> dict[str, Any]:
     text = read_text_file(source_path)
     return process_text_content(
         source_path=source_path,
@@ -328,7 +346,7 @@ def process_text_file(source_path: Path) -> dict[str, Any]:
         content_type="text",
         metadata_source="plain_text_volume_ingestion",
         file_extension=source_path.suffix.lower(),
-        embed_chunks_file=embed_chunks_file,
+        args=args,
     )
 
 
@@ -338,7 +356,7 @@ def process_text_content(
     content_type: str,
     metadata_source: str,
     file_extension: str,
-    embed_chunks_file: Any,
+    args: argparse.Namespace,
 ) -> dict[str, Any]:
     doc_id = slugify(source_path.stem)
     paragraphs = [paragraph.strip() for paragraph in text.split("\n\n") if paragraph.strip()]
@@ -387,14 +405,17 @@ def process_text_content(
         buffer_chars += len(paragraph)
     flush()
 
-    chunk_path = output_dir("chunks") / f"{doc_id}-chunks.jsonl"
-    write_jsonl(chunk_path, chunks)
-    _, embedded_path = embed_chunks_file(chunk_path)
+    raw_chunk_path = output_dir("chunks") / f"{doc_id}-chunks.jsonl"
+    write_jsonl(raw_chunk_path, chunks)
+    chunks, chunk_path, embedded_path, quality_summary_path, quality_summary = enrich_and_embed_chunks(raw_chunk_path, args)
     return {
         "kind": "text",
         "source": str(source_path),
+        "raw_chunk_path": str(raw_chunk_path),
         "chunk_path": str(chunk_path),
         "embedded_path": str(embedded_path),
+        "quality_summary_path": str(quality_summary_path),
+        "quality": quality_summary,
         "chunks": len(chunks),
     }
 
@@ -426,9 +447,7 @@ def extract_docx_text(path: Path) -> str:
     return "\n\n".join(paragraphs)
 
 
-def process_docx_file(source_path: Path) -> dict[str, Any]:
-    from app.services.embed_chunks import embed_chunks_file
-
+def process_docx_file(source_path: Path, args: argparse.Namespace) -> dict[str, Any]:
     text = extract_docx_text(source_path)
     if not text.strip():
         raise RuntimeError(f"DOCX file did not contain extractable text: {source_path}")
@@ -438,7 +457,7 @@ def process_docx_file(source_path: Path) -> dict[str, Any]:
         content_type="docx_text",
         metadata_source="docx_volume_ingestion",
         file_extension=source_path.suffix.lower(),
-        embed_chunks_file=embed_chunks_file,
+        args=args,
     )
     result["kind"] = "docx"
     return result
@@ -451,7 +470,7 @@ def process_file(source_path: Path, args: argparse.Namespace) -> dict[str, Any]:
     if suffix == ".pdf":
         return process_pdf_file(source_path, args)
     if suffix == ".docx":
-        return process_docx_file(source_path)
+        return process_docx_file(source_path, args)
     if suffix in OFFICE_EXTENSIONS:
         converted_root = output_dir("ingestion", "converted")
         pdf_path = convert_office_to_pdf(source_path, converted_root)
@@ -461,7 +480,7 @@ def process_file(source_path: Path, args: argparse.Namespace) -> dict[str, Any]:
         result["converted_pdf"] = str(pdf_path)
         return result
     if suffix in DOCUMENT_EXTENSIONS:
-        return process_text_file(source_path)
+        return process_text_file(source_path, args)
     raise RuntimeError(f"Unsupported file extension: {suffix}")
 
 
@@ -623,6 +642,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "video_transcription_provider": args.video_transcription_provider,
                 "video_vision_provider": args.video_vision_provider,
                 "pdf_vision_provider": args.pdf_vision_provider,
+                "quality_provider": args.quality_provider,
+                "quality_model": args.quality_model or os.getenv("QUALITY_ENRICHMENT_MODEL", ""),
+                "quality_required": args.quality_required,
+                "quality_min_llm_chars": args.quality_min_llm_chars,
                 "audio_segment_seconds": args.audio_segment_seconds,
                 "skip_pdf_vision": args.skip_pdf_vision,
                 "skip_video_transcription": args.skip_video_transcription,
@@ -810,9 +833,9 @@ def main() -> None:
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument("--max-files", type=int, default=0)
     parser.add_argument("--no-rebuild-index", action="store_true")
-    parser.add_argument("--databricks-models-only", action="store_true", help="Use Databricks model serving for embeddings and disable OpenAI-only ingestion steps.")
+    parser.add_argument("--databricks-models-only", action="store_true", help="Use Databricks model serving for embeddings, audio, vision, and quality cleanup when providers are auto.")
     parser.add_argument("--force-all-visual", action="store_true")
-    parser.add_argument("--skip-pdf-vision", action="store_true", help="Skip OpenAI PDF page vision and rely on Azure OCR/layout.")
+    parser.add_argument("--skip-pdf-vision", action="store_true", help="Skip PDF page vision and rely on Azure OCR/layout.")
     parser.add_argument("--pdf-vision-model", default=os.getenv("OPENAI_VISION_MODEL") or "gpt-4o-mini")
     parser.add_argument(
         "--pdf-vision-provider",
@@ -842,6 +865,19 @@ def main() -> None:
     parser.add_argument("--ocr-workers", type=int, default=int(os.getenv("VIDEO_OCR_WORKERS") or 2))
     parser.add_argument("--vision-workers", type=int, default=int(os.getenv("VIDEO_VISION_WORKERS") or 2))
     parser.add_argument("--vision-timeout-seconds", type=int, default=int(os.getenv("VIDEO_VISION_TIMEOUT_SECONDS") or 120))
+    parser.add_argument(
+        "--quality-provider",
+        default=os.getenv("QUALITY_ENRICHMENT_PROVIDER") or "auto",
+        choices=["auto", "databricks", "openai", "heuristic", "none"],
+        help="Provider for retrieval-quality text cleanup after raw extraction and before embeddings.",
+    )
+    parser.add_argument("--quality-model", default=os.getenv("QUALITY_ENRICHMENT_MODEL") or "")
+    parser.add_argument("--quality-required", action="store_true", help="Fail ingestion if LLM quality enrichment fails.")
+    parser.add_argument("--skip-quality-enrichment", action="store_true", help="Skip LLM cleanup and keep deterministic quality scoring only.")
+    parser.add_argument("--quality-glossary-path", default=os.getenv("QUALITY_GLOSSARY_PATH") or "")
+    parser.add_argument("--quality-min-llm-chars", type=int, default=int(os.getenv("QUALITY_MIN_LLM_CHARS") or 80))
+    parser.add_argument("--quality-max-input-chars", type=int, default=int(os.getenv("QUALITY_MAX_INPUT_CHARS") or 6500))
+    parser.add_argument("--quality-max-output-tokens", type=int, default=int(os.getenv("QUALITY_MAX_OUTPUT_TOKENS") or 1800))
     parser.add_argument("--enable-medallion", action="store_true", help="Write Bronze/Silver/Gold Delta tables in Unity Catalog.")
     parser.add_argument("--medallion-required", action="store_true", help="Fail ingestion when medallion Delta writes cannot be initialized.")
     parser.add_argument("--medallion-catalog", default=os.getenv("MEDALLION_CATALOG") or "insight-copilot")

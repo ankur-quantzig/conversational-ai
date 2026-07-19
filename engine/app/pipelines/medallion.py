@@ -50,6 +50,14 @@ def safe_float(value: Any, default: float | None = None) -> float | None:
         return default
 
 
+def safe_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
 def source_type_for_path(path: str, result: dict[str, Any] | None = None) -> str:
     kind = (result or {}).get("kind")
     if kind:
@@ -186,7 +194,16 @@ class MedallionWriter:
                   role STRING,
                   section STRING,
                   content STRING,
+                  raw_content STRING,
+                  normalized_content STRING,
                   token_count BIGINT,
+                  quality_score DOUBLE,
+                  needs_review BOOLEAN,
+                  detected_languages_json STRING,
+                  quality_corrections_json STRING,
+                  quality_notes_json STRING,
+                  quality_provider STRING,
+                  quality_model STRING,
                   page_numbers_json STRING,
                   start_time_seconds DOUBLE,
                   end_time_seconds DOUBLE,
@@ -214,7 +231,16 @@ class MedallionWriter:
                   role STRING,
                   section STRING,
                   content STRING,
+                  raw_content STRING,
+                  normalized_content STRING,
                   token_count BIGINT,
+                  quality_score DOUBLE,
+                  needs_review BOOLEAN,
+                  detected_languages_json STRING,
+                  quality_corrections_json STRING,
+                  quality_notes_json STRING,
+                  quality_provider STRING,
+                  quality_model STRING,
                   page_numbers_json STRING,
                   start_time_seconds DOUBLE,
                   end_time_seconds DOUBLE,
@@ -339,8 +365,10 @@ def artifact_paths(result: dict[str, Any]) -> dict[str, str]:
     keys = (
         "document_intelligence_output",
         "multimodal_output",
+        "raw_chunk_path",
         "chunk_path",
         "embedded_path",
+        "quality_summary_path",
         "converted_pdf",
     )
     return {key: str(result.get(key) or "") for key in keys if result.get(key)}
@@ -353,6 +381,9 @@ def metadata_value(chunk: dict[str, Any], key: str, default: Any = None) -> Any:
 
 def base_chunk_row(run_id: str, source_path: str, chunk: dict[str, Any]) -> dict[str, Any]:
     metadata = chunk.get("metadata") or {}
+    quality = metadata.get("quality") or {}
+    raw_content = str(metadata.get("raw_content") or "")
+    normalized_content = str(chunk.get("content") or "")
     return {
         "run_id": run_id,
         "source_path": source_path or str(chunk.get("source_path") or chunk.get("source_pdf") or ""),
@@ -362,8 +393,17 @@ def base_chunk_row(run_id: str, source_path: str, chunk: dict[str, Any]) -> dict
         "content_type": str(chunk.get("content_type") or ""),
         "role": str(chunk.get("role") or ""),
         "section": str(chunk.get("section") or " > ".join(chunk.get("section_path") or [])),
-        "content": str(chunk.get("content") or ""),
+        "content": normalized_content,
+        "raw_content": raw_content,
+        "normalized_content": normalized_content,
         "token_count": safe_int(chunk.get("token_count")),
+        "quality_score": safe_float(chunk.get("quality_score") or quality.get("quality_score"), -1.0),
+        "needs_review": safe_bool(chunk.get("needs_review") or quality.get("needs_review")),
+        "detected_languages_json": json_text(chunk.get("detected_languages") or quality.get("detected_languages") or []),
+        "quality_corrections_json": json_text(quality.get("corrections") or []),
+        "quality_notes_json": json_text(quality.get("quality_notes") or []),
+        "quality_provider": str(quality.get("provider") or ""),
+        "quality_model": str(quality.get("model") or ""),
         "page_numbers_json": json_text(chunk.get("page_numbers") or []),
         "start_time_seconds": safe_float(metadata.get("start_time"), -1.0),
         "end_time_seconds": safe_float(metadata.get("end_time"), -1.0),

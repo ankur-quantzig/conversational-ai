@@ -183,6 +183,7 @@ def build_visual_chunks(mm: dict[str, Any], doc_id: str, source_pdf: str) -> lis
         if not analysis:
             continue
         page_number = visual.get("page_number")
+        provider = visual.get("provider") or "openai"
         chunks.append(
             RagChunk(
                 id=f"{doc_id}-visual-{index:06d}-{stable_id(analysis)}",
@@ -195,7 +196,7 @@ def build_visual_chunks(mm: dict[str, Any], doc_id: str, source_pdf: str) -> lis
                 role="figure_summary",
                 token_count=estimate_tokens(analysis),
                 metadata={
-                    "source": "openai_vision",
+                    "source": f"{provider}_vision",
                     "model": visual.get("model"),
                     "status": visual.get("status"),
                     "reason": visual.get("reason"),

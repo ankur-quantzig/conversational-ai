@@ -152,6 +152,22 @@ def databricks_vision_endpoint() -> str:
     return env_value("DATABRICKS_VISION_ENDPOINT") or databricks_transcription_endpoint()
 
 
+def quality_enrichment_provider() -> str:
+    load_dotenv_file()
+    return (env_value("QUALITY_ENRICHMENT_PROVIDER") or "auto").lower()
+
+
+def quality_enrichment_model() -> str:
+    load_dotenv_file()
+    return env_value("QUALITY_ENRICHMENT_MODEL") or databricks_chat_endpoint()
+
+
+def quality_enrichment_required() -> bool:
+    load_dotenv_file()
+    value = (env_value("QUALITY_ENRICHMENT_REQUIRED") or "").strip().lower()
+    return value in {"1", "true", "yes", "y", "on"}
+
+
 def guardrail_model() -> str:
     load_dotenv_file()
     return env_value("OPENAI_GUARDRAIL_MODEL")

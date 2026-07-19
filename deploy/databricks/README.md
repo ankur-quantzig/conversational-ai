@@ -33,7 +33,11 @@ DATABRICKS_HOST=https://dbc-4d180757-761e.cloud.databricks.com
 DATABRICKS_CHAT_ENDPOINT=databricks-claude-sonnet-4
 DATABRICKS_EMBEDDING_ENDPOINT=databricks-bge-large-en
 DATABRICKS_TRANSCRIPTION_ENDPOINT=databricks-gemini-3-5-flash
+DATABRICKS_VISION_ENDPOINT=databricks-gemini-3-5-flash
 VIDEO_TRANSCRIPTION_PROVIDER=databricks
+VIDEO_VISION_PROVIDER=databricks
+QUALITY_ENRICHMENT_PROVIDER=databricks
+QUALITY_ENRICHMENT_MODEL=databricks-claude-sonnet-4
 DATABRICKS_TOKEN=<secret, or replace with a Databricks app/service-principal secret>
 AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=https://<your-resource>.cognitiveservices.azure.com/
 AZURE_DOCUMENT_INTELLIGENCE_KEY=<secret>
@@ -43,7 +47,7 @@ OPENAI_GUARDRAIL_MODEL=
 
 Do not upload `.env`.
 
-`DATABRICKS_CHAT_ENDPOINT`, `DATABRICKS_EMBEDDING_ENDPOINT`, and `DATABRICKS_TRANSCRIPTION_ENDPOINT` must match serving endpoint names enabled in your workspace.
+`DATABRICKS_CHAT_ENDPOINT`, `DATABRICKS_EMBEDDING_ENDPOINT`, `DATABRICKS_TRANSCRIPTION_ENDPOINT`, `DATABRICKS_VISION_ENDPOINT`, and `QUALITY_ENRICHMENT_MODEL` must match serving endpoint names enabled in your workspace.
 
 ## Identity And Quotas
 
@@ -153,4 +157,4 @@ If you need to stop it:
 - Databricks Apps usually handle authentication at the workspace/app layer. Keep app permissions restricted to the users who should access Insight Copilot.
 - Keep a managed database for production. Do not use local SQLite for shared Databricks deployment.
 - If Node/npm is not available in the Databricks app environment, run `npm ci` and `npm run build` before deployment and include the generated `dist/` folder in the uploaded app source.
-- Databricks mode uses Databricks BGE embeddings, Gemini audio transcription for video speech, LanceDB similarity search, and Databricks Claude Sonnet for grounded answer generation. Move retrieval to Databricks Vector Search later for a fully Databricks-native managed vector store.
+- Databricks mode uses Databricks BGE embeddings, Gemini audio transcription and vision for video content, Databricks Claude Sonnet for quality cleanup and grounded answer generation, LanceDB similarity search, and quality metadata attached to each enriched chunk. Move retrieval to Databricks Vector Search later for a fully Databricks-native managed vector store.

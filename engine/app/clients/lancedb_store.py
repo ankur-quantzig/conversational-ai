@@ -87,7 +87,32 @@ def filter_compatible_records(records: list[dict[str, Any]]) -> list[dict[str, A
     ]
 
 
+def quality_rank(chunk: dict[str, Any]) -> tuple[int, float]:
+    metadata = chunk.get("metadata") or {}
+    quality = metadata.get("quality") or {}
+    try:
+        score = float(chunk.get("quality_score") or quality.get("quality_score") or 0.0)
+    except Exception:
+        score = 0.0
+    return int(bool(quality)) + int(bool(metadata.get("raw_content"))), score
+
+
+def dedupe_chunks_by_id(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: dict[str, dict[str, Any]] = {}
+    anonymous: list[dict[str, Any]] = []
+    for chunk in chunks:
+        chunk_id = str(chunk.get("id") or "")
+        if not chunk_id:
+            anonymous.append(chunk)
+            continue
+        previous = deduped.get(chunk_id)
+        if previous is None or quality_rank(chunk) >= quality_rank(previous):
+            deduped[chunk_id] = chunk
+    return [*deduped.values(), *anonymous]
+
+
 def create_or_replace_index(chunks: list[dict[str, Any]], table_name: str = DEFAULT_TABLE_NAME, db_dir: Path | None = None):
+    chunks = dedupe_chunks_by_id(chunks)
     records = filter_compatible_records([to_lancedb_record(chunk) for chunk in chunks if chunk.get("embedding")])
     if not records:
         raise ValueError("No embedded chunks found. Embed chunks before building the vector DB.")

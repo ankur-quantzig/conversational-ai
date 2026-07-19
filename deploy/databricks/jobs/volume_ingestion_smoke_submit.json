@@ -3,7 +3,7 @@
   "tasks": [
     {
       "task_key": "smoke_volume_ingestion",
-      "description": "One-file real ingestion smoke test for chunking, Databricks embeddings, LanceDB rebuild, and manifest write.",
+      "description": "One-file real ingestion smoke test for chunking, quality enrichment, Databricks embeddings, LanceDB rebuild, and manifest write.",
       "spark_python_task": {
         "python_file": "/Workspace/Shared/insight-copilot/engine/app/pipelines/databricks_volume_ingest.py",
         "source": "WORKSPACE",
@@ -17,11 +17,26 @@
           "--databricks-models-only",
           "--video-transcription-provider",
           "databricks",
+          "--quality-provider",
+          "databricks",
+          "--quality-model",
+          "databricks-claude-sonnet-4",
+          "--quality-required",
           "--include",
           "uploads/insight-copilot-pipeline-smoke-test.txt",
           "--force",
           "--max-files",
-          "1"
+          "1",
+          "--enable-medallion",
+          "--medallion-required",
+          "--medallion-catalog",
+          "insight-copilot",
+          "--medallion-bronze-schema",
+          "bronze",
+          "--medallion-silver-schema",
+          "silver",
+          "--medallion-gold-schema",
+          "gold"
         ]
       },
       "environment_key": "serverless_python",

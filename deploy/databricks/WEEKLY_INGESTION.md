@@ -12,8 +12,9 @@ Databricks Volume input
   -> video audio transcription + frame OCR + optional Databricks frame vision
   -> plain text and DOCX ingestion
   -> optional Office conversion to PDF when LibreOffice is available
-  -> Silver extracted content table
-  -> chunks
+  -> raw retrieval chunks
+  -> quality enrichment, glossary cleanup, language normalization, and scoring
+  -> Silver curated content table
   -> Databricks embedding endpoint
   -> Gold embedded chunks table
   -> embedded JSONL
@@ -44,6 +45,9 @@ DATABRICKS_TRANSCRIPTION_ENDPOINT=databricks-gemini-3-5-flash
 DATABRICKS_VISION_ENDPOINT=databricks-gemini-3-5-flash
 VIDEO_TRANSCRIPTION_PROVIDER=databricks
 VIDEO_VISION_PROVIDER=databricks
+QUALITY_ENRICHMENT_PROVIDER=databricks
+QUALITY_ENRICHMENT_MODEL=databricks-claude-sonnet-4
+QUALITY_ENRICHMENT_REQUIRED=true
 DATABRICKS_DATA_VOLUME=/Volumes/<catalog>/<schema>/<input_volume>
 DATABRICKS_OUTPUT_VOLUME=/Volumes/<catalog>/<schema>/<output_volume>/insight-copilot-output
 AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=<secret or env>
@@ -52,7 +56,7 @@ AZURE_DOCUMENT_INTELLIGENCE_KEY=<secret>
 
 The app must also have `DATABRICKS_OUTPUT_VOLUME` set, otherwise it will read the packaged demo `output/` folder instead of the weekly pipeline output.
 
-The scheduled job uses `--databricks-models-only`, which forces `LLM_PROVIDER=databricks`, uses the Databricks embedding endpoint for chunks, uses the Databricks Gemini endpoint for spoken video audio and visual extraction, and removes OpenAI credentials from the ingestion runtime. In this mode `OPENAI_API_KEY` is not required or used.
+The scheduled job uses `--databricks-models-only`, which forces `LLM_PROVIDER=databricks`, uses the Databricks embedding endpoint for chunks, uses the Databricks Gemini endpoint for spoken video audio and visual extraction, uses the Databricks chat endpoint for quality enrichment, and removes OpenAI credentials from the ingestion runtime. In this mode `OPENAI_API_KEY` is not required or used.
 
 For this workspace, the discovered managed Volume is:
 
@@ -63,10 +67,12 @@ DATABRICKS_OUTPUT_VOLUME=/Volumes/insight-copilot/bronze/shell-bronze-insight-co
 
 ## Supported Inputs
 
-- PDFs: Azure Document Intelligence OCR/layout extraction plus optional Databricks page vision through `DATABRICKS_VISION_ENDPOINT`.
-- Videos: spoken audio transcription through `DATABRICKS_TRANSCRIPTION_ENDPOINT`, frame OCR, optional Databricks frame vision, and timestamped chunks.
+- PDFs: Azure Document Intelligence OCR/layout extraction plus optional Databricks page vision through `DATABRICKS_VISION_ENDPOINT`, followed by glossary-aware quality cleanup before embeddings.
+- Videos: spoken audio transcription through `DATABRICKS_TRANSCRIPTION_ENDPOINT`, frame OCR, optional Databricks frame vision, timestamped chunks, and Hindi-English/Hinglish normalization before embeddings.
 - Text-like docs: `.txt`, `.md`, `.csv`, `.json`, `.jsonl`, `.html`, `.log`.
 - Office docs: `.docx`, `.pptx`, `.xlsx`, legacy Office files if `libreoffice` or `soffice` exists on the job cluster.
+
+Quality enrichment preserves the original extracted text in chunk metadata as `raw_content`, writes normalized retrieval text to `content`, and attaches quality fields such as detected language, quality score, corrections, review flag, provider, and model.
 
 Video processing uses system `ffmpeg` when present and falls back to the `imageio-ffmpeg` Python package on Databricks serverless. `ffprobe` is optional because the pipeline can parse basic metadata through `ffmpeg`. Office conversion requires LibreOffice.
 
@@ -118,6 +124,8 @@ databricks_transcription_endpoint: databricks-gemini-3-5-flash
 databricks_vision_endpoint: databricks-gemini-3-5-flash
 video_transcription_provider: databricks
 video_vision_provider: databricks
+quality_provider: databricks
+quality_required: true
 DATABRICKS_RUNTIME_AUTH: true
 OPENAI_API_KEY: false
 ```
@@ -140,7 +148,7 @@ With `--enable-medallion --medallion-required`, each successful run writes:
 `insight-copilot`.`gold`.`insight_copilot_rag_chunks`
 ```
 
-Bronze stores one audit row per discovered file, including skipped/deferred/failed files. Silver stores extracted text, OCR, transcript, frame/page metadata, and artifact paths. Gold stores the retrieval-ready chunks with embeddings and embedding metadata.
+Bronze stores one audit row per discovered file, including skipped/deferred/failed files. Silver stores normalized extracted text plus raw text and quality metadata. Gold stores the retrieval-ready chunks with embeddings, embedding metadata, quality score, and review flags.
 
 ## Create Or Update The Weekly Job
 

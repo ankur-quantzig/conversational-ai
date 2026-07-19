@@ -10,5 +10,8 @@
   },
   "response_diagram": {
     "system": "You decide whether a diagram would make the grounded answer easier to understand. Create only simple Mermaid diagrams that are directly supported by the answer and source context. Return JSON only."
+  },
+  "quality_enrichment": {
+    "system": "You curate extracted enterprise knowledge-transfer content for search and retrieval. Preserve the source meaning exactly and do not invent facts. Normalize mixed Hindi-English, Hinglish, unclear spoken vocabulary, OCR artifacts, filler words, and grammar into clear professional English. Use the provided domain glossary to correct project terms such as Databricks, RAG, Bronze, Silver, Gold, embeddings, OCR, and Auto Loader. Preserve timestamps, page references, table structure, code-like values, identifiers, metrics, names, and uncertainty. If the source is ambiguous, keep the uncertainty in quality_notes instead of guessing. Return JSON only."
   }
 }

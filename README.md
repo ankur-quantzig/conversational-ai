@@ -88,19 +88,23 @@ LLM_PROVIDER=databricks
 DATABRICKS_CHAT_ENDPOINT=databricks-claude-sonnet-4
 DATABRICKS_EMBEDDING_ENDPOINT=databricks-bge-large-en
 DATABRICKS_TRANSCRIPTION_ENDPOINT=databricks-gemini-3-5-flash
+DATABRICKS_VISION_ENDPOINT=databricks-gemini-3-5-flash
+QUALITY_ENRICHMENT_PROVIDER=databricks
+QUALITY_ENRICHMENT_MODEL=databricks-claude-sonnet-4
 ```
 
-This removes the need for `OPENAI_API_KEY` for chat answers, query embeddings, and scheduled video audio transcription. The serving endpoint names must exist in your Databricks workspace.
+This removes the need for `OPENAI_API_KEY` for chat answers, query embeddings, scheduled video audio transcription, visual extraction, and quality cleanup. The serving endpoint names must exist in your Databricks workspace.
 
 ## RAG pipeline
 
 The current RAG path is:
 
-1. Extract layout with Azure Document Intelligence.
-2. Build DI-aware chunks from headings, body paragraphs, tables, and visual summaries.
-3. Embed chunks with `text-embedding-3-large`.
-4. Store/query vectors locally with LanceDB.
-5. Generate answers from retrieved chunks.
+1. Extract raw layout, transcript, OCR, and visual signals.
+2. Build DI-aware chunks from headings, body paragraphs, tables, transcript windows, and visual summaries.
+3. Enrich chunk quality by preserving raw text, normalizing mixed Hindi-English/Hinglish to clear English, applying the domain glossary, and scoring extraction quality.
+4. Embed the enriched chunks.
+5. Store/query vectors locally with LanceDB.
+6. Generate answers from retrieved chunks.
 
 Useful commands:
 
@@ -139,14 +143,14 @@ OPENAI_EMBEDDING_DIMENSIONS=3072
 Videos are processed into timestamped multimodal chunks:
 
 ```text
-video -> audio transcript -> sampled frames -> Azure DI frame OCR -> optional vision summaries -> timestamped chunks -> embeddings -> LanceDB
+video -> audio transcript -> sampled frames -> Azure DI frame OCR -> optional vision summaries -> timestamped chunks -> quality enrichment -> embeddings -> LanceDB
 ```
 
 Requirements:
 
 - `ffmpeg` and `ffprobe` available on the machine, or use the API Docker image.
 - Azure Document Intelligence env vars for frame OCR.
-- Databricks deployment uses `DATABRICKS_TRANSCRIPTION_ENDPOINT` for spoken audio, `DATABRICKS_EMBEDDING_ENDPOINT` for embeddings, and skips OpenAI frame visual summaries by default.
+- Databricks deployment uses `DATABRICKS_TRANSCRIPTION_ENDPOINT` for spoken audio, `DATABRICKS_VISION_ENDPOINT` for frame visual summaries, `QUALITY_ENRICHMENT_MODEL` for retrieval-quality cleanup, and `DATABRICKS_EMBEDDING_ENDPOINT` for embeddings.
 - Local OpenAI mode can still use `OPENAI_API_KEY` for transcription, frame visual summaries, embeddings, and final answers.
 
 Process every video in `data/Videos`, embed the chunks, and rebuild LanceDB:
@@ -168,6 +172,7 @@ output/videos/{video_id}/frames/
 output/videos/{video_id}/frame_ocr.json
 output/videos/{video_id}/visual_analysis.json
 output/chunks/{video_id}-video-chunks.jsonl
+output/quality/{video_id}-video-quality-chunks.jsonl
 output/embeddings/{video_id}-video-embedded.jsonl
 ```
 
@@ -181,6 +186,7 @@ start_time_label
 end_time_label
 key_frame_path
 transcript + Azure OCR text + visual summary
+raw_content + quality score in metadata
 ```
 
 ## React chatbot + FastAPI

@@ -159,7 +159,9 @@ jobs:
           PY
 
       - name: Run engine smoke test
-        run: python tests/tmp_normalize_check.py
+        run: |
+          python tests/tmp_normalize_check.py
+          python tests/quality_enrichment_smoke.py
 
   frontend:
     name: UI production build

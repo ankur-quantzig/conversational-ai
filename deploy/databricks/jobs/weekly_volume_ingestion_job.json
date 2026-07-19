@@ -17,7 +17,7 @@
   "tasks": [
     {
       "task_key": "incremental_volume_ingestion",
-      "description": "Scan Databricks Volume for new or updated documents/videos, extract OCR/audio/frames, chunk, embed, and rebuild LanceDB.",
+      "description": "Scan Databricks Volume for new or updated documents/videos, extract OCR/audio/frames, enrich quality, embed, and rebuild LanceDB.",
       "spark_python_task": {
         "python_file": "/Workspace/Shared/insight-copilot/engine/app/pipelines/databricks_volume_ingest.py",
         "source": "WORKSPACE",
@@ -49,6 +49,11 @@
           "1",
           "--vision-timeout-seconds",
           "120",
+          "--quality-provider",
+          "databricks",
+          "--quality-model",
+          "databricks-claude-sonnet-4",
+          "--quality-required",
           "--enable-medallion",
           "--medallion-required",
           "--medallion-catalog",
