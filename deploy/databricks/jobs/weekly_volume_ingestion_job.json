@@ -23,7 +23,7 @@
         "source": "WORKSPACE",
         "parameters": [
           "--input-volume",
-          "/Volumes/insight-copilot/bronze/shell-bronze-insight-copilot",
+          "/Volumes/insight-copilot/bronze/shell-bronze-insight-copilot/new_data",
           "--output-root",
           "/Volumes/insight-copilot/bronze/shell-bronze-insight-copilot/_insight_copilot_output",
           "--secret-scope",

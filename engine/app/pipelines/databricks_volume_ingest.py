@@ -11,9 +11,11 @@ import sys
 import tempfile
 import time
 import traceback
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree as ET
 
 SCRIPT_FILE = globals().get("__file__")
 ROOT = Path(SCRIPT_FILE).resolve().parents[3] if SCRIPT_FILE else Path(os.getenv("INSIGHT_REPO_ROOT", "/Workspace/Shared/insight-copilot"))
@@ -30,6 +32,7 @@ MANIFEST_VERSION = 1
 DOCUMENT_EXTENSIONS = {".pdf", ".txt", ".md", ".markdown", ".csv", ".json", ".jsonl", ".html", ".htm", ".log"}
 OFFICE_EXTENSIONS = {".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".mkv", ".webm"}
+WORD_XML_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 DEFAULT_INCLUDE = [f"**/*{extension}" for extension in sorted(DOCUMENT_EXTENSIONS | OFFICE_EXTENSIONS | VIDEO_EXTENSIONS)]
 DEFAULT_EXCLUDE = [
     "**/.DS_Store",
@@ -306,6 +309,24 @@ def process_text_file(source_path: Path) -> dict[str, Any]:
     from app.services.embed_chunks import embed_chunks_file
 
     text = read_text_file(source_path)
+    return process_text_content(
+        source_path=source_path,
+        text=text,
+        content_type="text",
+        metadata_source="plain_text_volume_ingestion",
+        file_extension=source_path.suffix.lower(),
+        embed_chunks_file=embed_chunks_file,
+    )
+
+
+def process_text_content(
+    source_path: Path,
+    text: str,
+    content_type: str,
+    metadata_source: str,
+    file_extension: str,
+    embed_chunks_file: Any,
+) -> dict[str, Any]:
     doc_id = slugify(source_path.stem)
     paragraphs = [paragraph.strip() for paragraph in text.split("\n\n") if paragraph.strip()]
     chunks = []
@@ -329,13 +350,13 @@ def process_text_file(source_path: Path) -> dict[str, Any]:
                 "source_path": str(source_path),
                 "source_type": "document",
                 "content": content,
-                "content_type": "text",
+                "content_type": content_type,
                 "page_numbers": [],
                 "section_path": [source_path.name],
                 "section": source_path.name,
                 "role": "body",
                 "token_count": estimate_tokens(content),
-                "metadata": {"source": "plain_text_volume_ingestion", "file_extension": source_path.suffix.lower()},
+                "metadata": {"source": metadata_source, "file_extension": file_extension},
             }
         )
         buffer.clear()
@@ -365,12 +386,59 @@ def process_text_file(source_path: Path) -> dict[str, Any]:
     }
 
 
+def extract_docx_text(path: Path) -> str:
+    paragraphs: list[str] = []
+    try:
+        with zipfile.ZipFile(path) as archive:
+            document_xml = archive.read("word/document.xml")
+    except KeyError as exc:
+        raise RuntimeError(f"DOCX file is missing word/document.xml: {path}") from exc
+    except zipfile.BadZipFile as exc:
+        raise RuntimeError(f"DOCX file is not a valid zip archive: {path}") from exc
+
+    root = ET.fromstring(document_xml)
+    for paragraph in root.findall(".//w:p", WORD_XML_NS):
+        parts: list[str] = []
+        for node in paragraph.iter():
+            tag = node.tag.rsplit("}", 1)[-1]
+            if tag == "t" and node.text:
+                parts.append(node.text)
+            elif tag == "tab":
+                parts.append("\t")
+            elif tag == "br":
+                parts.append("\n")
+        text = " ".join("".join(parts).split())
+        if text:
+            paragraphs.append(text)
+    return "\n\n".join(paragraphs)
+
+
+def process_docx_file(source_path: Path) -> dict[str, Any]:
+    from app.services.embed_chunks import embed_chunks_file
+
+    text = extract_docx_text(source_path)
+    if not text.strip():
+        raise RuntimeError(f"DOCX file did not contain extractable text: {source_path}")
+    result = process_text_content(
+        source_path=source_path,
+        text=text,
+        content_type="docx_text",
+        metadata_source="docx_volume_ingestion",
+        file_extension=source_path.suffix.lower(),
+        embed_chunks_file=embed_chunks_file,
+    )
+    result["kind"] = "docx"
+    return result
+
+
 def process_file(source_path: Path, args: argparse.Namespace) -> dict[str, Any]:
     suffix = source_path.suffix.lower()
     if suffix in VIDEO_EXTENSIONS:
         return process_video_file(source_path, args)
     if suffix == ".pdf":
         return process_pdf_file(source_path, args)
+    if suffix == ".docx":
+        return process_docx_file(source_path)
     if suffix in OFFICE_EXTENSIONS:
         converted_root = output_dir("ingestion", "converted")
         pdf_path = convert_office_to_pdf(source_path, converted_root)
