@@ -36,10 +36,10 @@ const chunkFiles = import.meta.glob('../output/chunks/*-chunks.jsonl', {
 })
 
 const starterExamples = [
-  'What are AI agents and how do they work?',
-  'How do AI agents use tools and memory?',
-  'What is the difference between generative AI, AI agents, and agentic AI?',
-  'What are the key ideas across the indexed PDFs and videos?',
+  'What is the main objective of the Conversational AI POC?',
+  'Why do the videos need both transcription and frame-by-frame OCR?',
+  'How should the solution connect video content with related documents?',
+  'What Databricks architecture was proposed for SharePoint, Auto Loader, and the Bronze-Silver-Gold flow?',
 ]
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api'
