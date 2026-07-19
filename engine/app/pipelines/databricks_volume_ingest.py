@@ -44,9 +44,21 @@ DEFAULT_EXCLUDE = [
 SECRET_ENV_KEYS = [
     "DATABRICKS_HOST",
     "DATABRICKS_TOKEN",
+    "DATABRICKS_CHAT_ENDPOINT",
+    "DATABRICKS_EMBEDDING_ENDPOINT",
+    "LLM_PROVIDER",
     "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT",
     "AZURE_DOCUMENT_INTELLIGENCE_KEY",
+]
+OPENAI_ENV_KEYS = [
     "OPENAI_API_KEY",
+    "OPENAI_ANSWER_MODEL",
+    "OPENAI_EMBEDDING_MODEL",
+    "OPENAI_EMBEDDING_DIMENSIONS",
+    "OPENAI_TRANSCRIPTION_MODEL",
+    "OPENAI_VISION_MODEL",
+    "OPENAI_GUARDRAIL_MODEL",
+    "OPANAI_API_KEY",
 ]
 
 
@@ -179,6 +191,17 @@ def is_fatal_external_error(exc: Exception) -> bool:
     return any(marker in message for marker in fatal_markers)
 
 
+def apply_model_mode(args: argparse.Namespace) -> None:
+    if not args.databricks_models_only:
+        return
+    os.environ["LLM_PROVIDER"] = "databricks"
+    args.skip_pdf_vision = True
+    args.skip_video_transcription = True
+    args.skip_video_vision = True
+    for key in OPENAI_ENV_KEYS:
+        os.environ.pop(key, None)
+
+
 def output_summary_path() -> Path:
     path = output_dir("ingestion", f"volume-ingestion-run-{int(time.time())}.json")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -226,6 +249,7 @@ def process_pdf_file(source_path: Path, args: argparse.Namespace) -> dict[str, A
         all_pages=True,
         force_all_visual=args.force_all_visual,
         vision_model=args.pdf_vision_model,
+        skip_vision=args.skip_pdf_vision,
     )
     di_json = Path(payload["document_intelligence_output"])
     mm_json = Path(payload["multimodal_output"])
@@ -250,6 +274,7 @@ def process_video_file(source_path: Path, args: argparse.Namespace) -> dict[str,
         video_path=source_path,
         frame_interval_seconds=args.frame_interval_seconds,
         chunk_window_seconds=args.chunk_window_seconds,
+        skip_transcription=args.skip_video_transcription,
         skip_vision=args.skip_video_vision,
         ocr_workers=args.ocr_workers,
         vision_workers=args.vision_workers,
@@ -355,13 +380,44 @@ def process_file(source_path: Path, args: argparse.Namespace) -> dict[str, Any]:
 
 def rebuild_index() -> dict[str, Any]:
     from app.clients.lancedb_store import DEFAULT_TABLE_NAME, DB_DIR, create_or_replace_index
+    from app.services.embed_chunks import embedding_config
 
     embedded_files = sorted(output_dir("embeddings").glob("*-embedded.jsonl"))
     chunks: list[dict[str, Any]] = []
     for path in embedded_files:
         chunks.extend(load_chunks_jsonl(path))
+    discovered_chunks = len(chunks)
+    active_model, _ = embedding_config()
+    if active_model:
+        matching_chunks = [
+            chunk
+            for chunk in chunks
+            if active_model.lower() in str(chunk.get("embedding_model") or "").lower()
+        ]
+        if matching_chunks:
+            chunks = matching_chunks
+    vector_lengths: dict[int, int] = {}
+    for chunk in chunks:
+        vector = chunk.get("embedding")
+        if isinstance(vector, list) and vector:
+            vector_lengths[len(vector)] = vector_lengths.get(len(vector), 0) + 1
+    target_vector_length = max(vector_lengths, key=vector_lengths.get) if vector_lengths else 0
+    if target_vector_length:
+        chunks = [
+            chunk
+            for chunk in chunks
+            if isinstance(chunk.get("embedding"), list) and len(chunk["embedding"]) == target_vector_length
+        ]
     if not chunks:
-        return {"indexed_chunks": 0, "embedded_files": [], "table_name": DEFAULT_TABLE_NAME, "vector_db": str(DB_DIR)}
+        return {
+            "indexed_chunks": 0,
+            "discovered_chunks": discovered_chunks,
+            "active_embedding_model": active_model,
+            "target_vector_length": target_vector_length,
+            "embedded_files": [],
+            "table_name": DEFAULT_TABLE_NAME,
+            "vector_db": str(DB_DIR),
+        }
     if str(DB_DIR).startswith("/Volumes/"):
         with tempfile.TemporaryDirectory(prefix="insight-copilot-lancedb-") as temporary_dir:
             local_db_dir = Path(temporary_dir) / "lancedb"
@@ -374,6 +430,9 @@ def rebuild_index() -> dict[str, Any]:
         create_or_replace_index(chunks, table_name=DEFAULT_TABLE_NAME)
     return {
         "indexed_chunks": len(chunks),
+        "discovered_chunks": discovered_chunks,
+        "active_embedding_model": active_model,
+        "target_vector_length": target_vector_length,
         "embedded_files": [str(path) for path in embedded_files],
         "table_name": DEFAULT_TABLE_NAME,
         "vector_db": str(DB_DIR),
@@ -427,6 +486,7 @@ def load_secret_scope(scope: str | None) -> None:
 def run(args: argparse.Namespace) -> dict[str, Any]:
     input_root, manifest_path = configure_paths(args)
     load_secret_scope(args.secret_scope)
+    apply_model_mode(args)
     if args.diagnostics:
         ffmpeg_path = shutil.which("ffmpeg")
         if not ffmpeg_path:
@@ -436,15 +496,40 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
             except Exception:
                 ffmpeg_path = None
+        runtime_host, runtime_token = "", ""
+        serving_auth_error = ""
+        config_error = ""
+        provider = os.getenv("LLM_PROVIDER", "")
+        chat_endpoint = os.getenv("DATABRICKS_CHAT_ENDPOINT", "")
+        embedding_endpoint = os.getenv("DATABRICKS_EMBEDDING_ENDPOINT", "")
+        try:
+            from app.config import databricks_chat_endpoint, databricks_embedding_endpoint, llm_provider
+
+            provider = llm_provider()
+            chat_endpoint = databricks_chat_endpoint()
+            embedding_endpoint = databricks_embedding_endpoint()
+        except Exception as exc:
+            config_error = f"{type(exc).__name__}: {exc}"
         try:
             from app.clients.databricks_model_serving import serving_auth
 
             runtime_host, runtime_token = serving_auth()
-        except Exception:
-            runtime_host, runtime_token = "", ""
+        except Exception as exc:
+            serving_auth_error = f"{type(exc).__name__}: {exc}"
 
         return {
             "diagnostics": True,
+            "model_mode": {
+                "llm_provider": provider,
+                "databricks_models_only": args.databricks_models_only,
+                "databricks_chat_endpoint": chat_endpoint,
+                "databricks_embedding_endpoint": embedding_endpoint,
+                "skip_pdf_vision": args.skip_pdf_vision,
+                "skip_video_transcription": args.skip_video_transcription,
+                "skip_video_vision": args.skip_video_vision,
+                "config_error": config_error,
+                "serving_auth_error": serving_auth_error,
+            },
             "input_root": str(input_root),
             "input_root_exists": input_root.exists(),
             "output_root": str(output_dir()),
@@ -578,10 +663,13 @@ def main() -> None:
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument("--max-files", type=int, default=0)
     parser.add_argument("--no-rebuild-index", action="store_true")
+    parser.add_argument("--databricks-models-only", action="store_true", help="Use Databricks model serving for embeddings and disable OpenAI-only ingestion steps.")
     parser.add_argument("--force-all-visual", action="store_true")
+    parser.add_argument("--skip-pdf-vision", action="store_true", help="Skip OpenAI PDF page vision and rely on Azure OCR/layout.")
     parser.add_argument("--pdf-vision-model", default=os.getenv("OPENAI_VISION_MODEL") or "gpt-4o-mini")
     parser.add_argument("--frame-interval-seconds", type=float, default=float(os.getenv("VIDEO_FRAME_INTERVAL_SECONDS") or 5.0))
     parser.add_argument("--chunk-window-seconds", type=float, default=float(os.getenv("VIDEO_CHUNK_WINDOW_SECONDS") or 30.0))
+    parser.add_argument("--skip-video-transcription", action="store_true", help="Skip OpenAI audio transcription and rely on visual OCR.")
     parser.add_argument("--skip-video-vision", action="store_true")
     parser.add_argument("--ocr-workers", type=int, default=int(os.getenv("VIDEO_OCR_WORKERS") or 2))
     parser.add_argument("--vision-workers", type=int, default=int(os.getenv("VIDEO_VISION_WORKERS") or 2))

@@ -17,6 +17,7 @@ def main() -> None:
     parser.add_argument("input", type=Path, help="Video file or directory of videos.")
     parser.add_argument("--frame-interval-seconds", type=float, default=5.0)
     parser.add_argument("--chunk-window-seconds", type=float, default=30.0)
+    parser.add_argument("--skip-transcription", action="store_true", help="Skip OpenAI audio transcription.")
     parser.add_argument("--skip-vision", action="store_true", help="Skip OpenAI frame visual summaries.")
     parser.add_argument("--embed", action="store_true", help="Embed the generated chunks.")
     parser.add_argument("--rebuild-index", action="store_true", help="Rebuild LanceDB from all embedded files after embedding.")
@@ -71,6 +72,7 @@ def process_one_video(index: int, total: int, video_path: Path, args: argparse.N
         video_path=video_path,
         frame_interval_seconds=args.frame_interval_seconds,
         chunk_window_seconds=args.chunk_window_seconds,
+        skip_transcription=args.skip_transcription,
         skip_vision=args.skip_vision,
         ocr_workers=max(1, args.ocr_workers),
         vision_workers=max(1, args.vision_workers),

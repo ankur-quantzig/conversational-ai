@@ -379,7 +379,13 @@ def merge_page_extractions(di_result: dict[str, Any], page_records_payload: list
     }
 
 
-def analyze_pdf(pdf_path: Path, all_pages: bool = False, force_all_visual: bool = False, vision_model: str | None = None) -> dict:
+def analyze_pdf(
+    pdf_path: Path,
+    all_pages: bool = False,
+    force_all_visual: bool = False,
+    vision_model: str | None = None,
+    skip_vision: bool = False,
+) -> dict:
     load_dotenv_file()
     di_client = client_from_env()
     with pdf_path.open("rb") as handle:
@@ -397,28 +403,31 @@ def analyze_pdf(pdf_path: Path, all_pages: bool = False, force_all_visual: bool 
     if not all_pages and not force_all_visual:
         candidates = list(all_page_records)
 
-    client = OpenAI(api_key=env_value("OPENAI_API_KEY", "OPANAI_API_KEY"))
-    vision_candidates = [m.strip() for m in (vision_model or DEFAULT_VISION_MODEL).split(",") if m.strip()]
-    for extra in ("gpt-4o-mini", "gpt-4.1-mini", "gpt-4o"):
-        if extra not in vision_candidates:
-            vision_candidates.append(extra)
-
     visual_pages = []
-    for candidate in candidates:
-        image_path = render_page(pdf_path, candidate["page_number"])
-        result = analyze_page_with_openai(client, vision_candidates, pdf_path, candidate["page_number"], image_path, candidate["text"])
-        result["reason"] = candidate["reason"]
-        result["has_visual"] = candidate.get("has_visual", False)
-        result["image_count"] = candidate.get("image_count", 0)
-        result["drawing_count"] = candidate.get("drawing_count", 0)
-        visual_pages.append(result)
+    vision_candidates: list[str] = []
+    if not skip_vision:
+        client = OpenAI(api_key=env_value("OPENAI_API_KEY", "OPANAI_API_KEY"))
+        vision_candidates = [m.strip() for m in (vision_model or DEFAULT_VISION_MODEL).split(",") if m.strip()]
+        for extra in ("gpt-4o-mini", "gpt-4.1-mini", "gpt-4o"):
+            if extra not in vision_candidates:
+                vision_candidates.append(extra)
+
+        for candidate in candidates:
+            image_path = render_page(pdf_path, candidate["page_number"])
+            result = analyze_page_with_openai(client, vision_candidates, pdf_path, candidate["page_number"], image_path, candidate["text"])
+            result["reason"] = candidate["reason"]
+            result["has_visual"] = candidate.get("has_visual", False)
+            result["image_count"] = candidate.get("image_count", 0)
+            result["drawing_count"] = candidate.get("drawing_count", 0)
+            visual_pages.append(result)
 
     merged_extraction = merge_page_extractions(di_result, all_page_records, visual_pages)
     payload = {
         "input_pdf": relative_pdf,
         "document_intelligence": di_result,
-        "vision_model": vision_candidates[0],
+        "vision_model": vision_candidates[0] if vision_candidates else "",
         "vision_model_candidates": vision_candidates,
+        "vision_skipped": skip_vision,
         "vision_candidate_pages": [
             {
                 "page_number": item["page_number"],
@@ -462,9 +471,16 @@ def main() -> None:
     parser.add_argument("--all-pages", action="store_true", default=True, help="Analyze every page in the PDF.")
     parser.add_argument("--force-all-visual", action="store_true", help="Ignore page screening and send all pages to vision.")
     parser.add_argument("--vision-model", default=DEFAULT_VISION_MODEL)
+    parser.add_argument("--skip-vision", action="store_true", help="Skip OpenAI page vision and use OCR/layout only.")
     args = parser.parse_args()
     pdf_path = Path(args.pdf).resolve() if args.pdf else pick_pdf()
-    payload = analyze_pdf(pdf_path, all_pages=args.all_pages, force_all_visual=args.force_all_visual, vision_model=args.vision_model)
+    payload = analyze_pdf(
+        pdf_path,
+        all_pages=args.all_pages,
+        force_all_visual=args.force_all_visual,
+        vision_model=args.vision_model,
+        skip_vision=args.skip_vision,
+    )
     print(json.dumps({"input_pdf": payload["input_pdf"], "pages": len(payload["document_intelligence"]["pages"]), "content_chars": payload["document_intelligence"]["content_chars"], "tables": len(payload["document_intelligence"]["tables"]), "vision_model": payload["vision_model"], "vision_pages": [v["page_number"] for v in payload["visual_analysis"]], "output": display_path(OUTPUT_DIR / f"{pdf_path.stem[:80]}-multimodal-analysis.json")}, indent=2))
 
 

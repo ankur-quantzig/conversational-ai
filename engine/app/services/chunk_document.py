@@ -253,7 +253,7 @@ def build_merged_page_chunks(mm: dict[str, Any], doc_id: str, source_pdf: str) -
                     role="merged_page",
                     token_count=estimate_tokens(content),
                     metadata={
-                        "source": "merged_azure_di_openai_vision",
+                        "source": "merged_page_extraction",
                         "page_number": page_number,
                         "merge_sources": page.get("sources", []),
                         "dedupe": page.get("dedupe", {}),

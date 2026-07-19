@@ -50,8 +50,45 @@ def to_lancedb_record(chunk: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def active_embedding_model_filter() -> str:
+    try:
+        from app.config import databricks_embedding_endpoint, llm_provider
+
+        if llm_provider() == "databricks":
+            return databricks_embedding_endpoint().lower()
+    except Exception:
+        return ""
+    return ""
+
+
+def filter_compatible_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    active_model = active_embedding_model_filter()
+    if active_model:
+        model_records = [
+            record
+            for record in records
+            if active_model in str(record.get("embedding_model") or "").lower()
+        ]
+        if model_records:
+            records = model_records
+
+    dimension_counts: dict[int, int] = {}
+    for record in records:
+        vector = record.get("vector")
+        if isinstance(vector, list) and vector:
+            dimension_counts[len(vector)] = dimension_counts.get(len(vector), 0) + 1
+    if not dimension_counts:
+        return []
+    target_dimension = max(dimension_counts, key=dimension_counts.get)
+    return [
+        record
+        for record in records
+        if isinstance(record.get("vector"), list) and len(record["vector"]) == target_dimension
+    ]
+
+
 def create_or_replace_index(chunks: list[dict[str, Any]], table_name: str = DEFAULT_TABLE_NAME, db_dir: Path | None = None):
-    records = [to_lancedb_record(chunk) for chunk in chunks if chunk.get("embedding")]
+    records = filter_compatible_records([to_lancedb_record(chunk) for chunk in chunks if chunk.get("embedding")])
     if not records:
         raise ValueError("No embedded chunks found. Embed chunks before building the vector DB.")
     db = connect(db_dir)

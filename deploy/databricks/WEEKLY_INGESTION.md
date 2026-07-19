@@ -7,8 +7,8 @@ This pipeline scans a Databricks Volume for new or updated files, processes only
 ```text
 Databricks Volume input
   -> incremental manifest check
-  -> PDF OCR/layout/vision extraction
-  -> video audio transcription + frame OCR + frame vision extraction
+  -> PDF OCR/layout extraction
+  -> video frame OCR extraction
   -> plain text ingestion
   -> optional Office conversion to PDF when LibreOffice is available
   -> chunks
@@ -41,10 +41,11 @@ DATABRICKS_DATA_VOLUME=/Volumes/<catalog>/<schema>/<input_volume>
 DATABRICKS_OUTPUT_VOLUME=/Volumes/<catalog>/<schema>/<output_volume>/insight-copilot-output
 AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=<secret or env>
 AZURE_DOCUMENT_INTELLIGENCE_KEY=<secret>
-OPENAI_API_KEY=<required by current PDF/video vision and Whisper transcription paths>
 ```
 
 The app must also have `DATABRICKS_OUTPUT_VOLUME` set, otherwise it will read the packaged demo `output/` folder instead of the weekly pipeline output.
+
+The scheduled job uses `--databricks-models-only`, which forces `LLM_PROVIDER=databricks`, uses the Databricks embedding endpoint for chunks, and disables OpenAI-only ingestion steps. In this mode `OPENAI_API_KEY` is not required or used.
 
 For this workspace, the discovered managed Volume is:
 
@@ -55,8 +56,8 @@ DATABRICKS_OUTPUT_VOLUME=/Volumes/insight-copilot/bronze/shell-bronze-insight-co
 
 ## Supported Inputs
 
-- PDFs: full OCR/layout + page vision extraction.
-- Videos: audio extraction, transcription, frame OCR, optional frame vision, timestamped chunks.
+- PDFs: Azure Document Intelligence OCR/layout extraction. OpenAI page vision is skipped in Databricks-only mode.
+- Videos: frame OCR and timestamped chunks. OpenAI audio transcription and frame vision are skipped in Databricks-only mode.
 - Text-like docs: `.txt`, `.md`, `.csv`, `.json`, `.jsonl`, `.html`, `.log`.
 - Office docs: `.docx`, `.pptx`, `.xlsx`, legacy Office files if `libreoffice` or `soffice` exists on the job cluster.
 
@@ -88,8 +89,35 @@ Then run:
 python /Workspace/Shared/insight-copilot/engine/app/pipelines/databricks_volume_ingest.py \
   --input-volume /Volumes/<catalog>/<schema>/<input_volume> \
   --output-root /Volumes/<catalog>/<schema>/<output_volume>/insight-copilot-output \
+  --databricks-models-only \
   --dry-run
 ```
+
+## Databricks Health Checks
+
+Run diagnostics to confirm the job identity can see the Volume, Databricks serving auth, Azure OCR config, and Databricks model mode:
+
+```powershell
+databricks jobs submit --json "@deploy/databricks/jobs/volume_ingestion_diagnostics_submit.json" --profile dbc-insight-copilot-deployer
+```
+
+Expected diagnostic signals:
+
+```text
+llm_provider: databricks
+databricks_models_only: true
+databricks_embedding_endpoint: databricks-bge-large-en
+DATABRICKS_RUNTIME_AUTH: true
+OPENAI_API_KEY: false
+```
+
+Run the smoke test to process one tiny file, call the Databricks embedding endpoint, and rebuild LanceDB:
+
+```powershell
+databricks jobs submit --json "@deploy/databricks/jobs/volume_ingestion_smoke_submit.json" --profile dbc-insight-copilot-deployer
+```
+
+Expected smoke output includes `failed: []`, `active_embedding_model: databricks-bge-large-en`, and `target_vector_length: 1024`.
 
 ## Create Or Update The Weekly Job
 

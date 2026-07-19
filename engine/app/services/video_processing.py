@@ -680,6 +680,7 @@ def process_video(
     video_path: Path,
     frame_interval_seconds: float = DEFAULT_FRAME_INTERVAL_SECONDS,
     chunk_window_seconds: float = DEFAULT_CHUNK_WINDOW_SECONDS,
+    skip_transcription: bool = False,
     skip_vision: bool = False,
     ocr_workers: int = 1,
     vision_workers: int = 1,
@@ -694,17 +695,18 @@ def process_video(
     log_step(f"Processing {video_path.name}")
     log_step("Reading video metadata")
     metadata = probe_video(video_path)
-    log_step(
-        f"Duration {format_time(metadata.get('duration_seconds', 0))}; "
-        f"extracting audio to {paths.audio}"
-    )
-    if paths.audio.exists() and paths.audio.stat().st_size >= 1024:
-        log_step(f"Using existing audio {paths.audio}")
+    log_step(f"Duration {format_time(metadata.get('duration_seconds', 0))}")
+    if skip_transcription:
+        log_step("Skipping audio transcription")
     else:
-        if paths.audio.exists():
-            log_step(f"Regenerating incomplete audio {paths.audio}")
-            paths.audio.unlink(missing_ok=True)
-        extract_audio(video_path, paths.audio)
+        log_step(f"Extracting audio to {paths.audio}")
+        if paths.audio.exists() and paths.audio.stat().st_size >= 1024:
+            log_step(f"Using existing audio {paths.audio}")
+        else:
+            if paths.audio.exists():
+                log_step(f"Regenerating incomplete audio {paths.audio}")
+                paths.audio.unlink(missing_ok=True)
+            extract_audio(video_path, paths.audio)
     log_step(f"Extracting frames every {frame_interval_seconds:g}s to {paths.frames_dir}")
     existing_frames = sorted(paths.frames_dir.glob("frame_*.jpg"))
     if existing_frames:
@@ -716,7 +718,14 @@ def process_video(
     else:
         frames = extract_frames(video_path, paths.frames_dir, interval_seconds=frame_interval_seconds)
     log_step(f"Extracted {len(frames)} frames")
-    if paths.transcript.exists():
+    if skip_transcription:
+        transcript = {
+            "text": "",
+            "segments": [],
+            "skipped": True,
+            "reason": "audio transcription disabled for Databricks-only ingestion",
+        }
+    elif paths.transcript.exists():
         log_step(f"Using existing transcript {paths.transcript}")
         transcript = json.loads(paths.transcript.read_text(encoding="utf-8"))
     else:
