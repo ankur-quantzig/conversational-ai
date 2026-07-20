@@ -43,6 +43,7 @@ from app.rag.answer import (
     plan_conversation_question,
     prepare_retrieval_question,
 )
+from app.rag.prompt_store import validate_prompt_catalogs
 from app.security.audit import log_audit_event
 from app.security.auth import UserContext, current_user, ensure_document_access, require_role
 from app.security.guardrails import QuerySecurityResult, classify_query
@@ -432,6 +433,41 @@ def health() -> dict[str, Any]:
     with get_connection() as conn:
         conn.execute("select 1")
     return {"ok": True, "env": app_env(), "chunks": len(load_chunks())}
+
+
+def readiness_snapshot() -> dict[str, Any]:
+    checks: dict[str, Any] = {
+        "database": False,
+        "prompts": False,
+        "chunks": len(load_chunks()),
+        "vector_index": vector_index_status(load_chunks()),
+    }
+    try:
+        with get_connection() as conn:
+            conn.execute("select 1")
+        checks["database"] = True
+    except Exception as exc:
+        checks["database_error"] = type(exc).__name__
+    try:
+        validate_prompt_catalogs()
+        checks["prompts"] = True
+    except Exception as exc:
+        checks["prompt_error"] = type(exc).__name__
+    checks["ready"] = bool(
+        checks["database"]
+        and checks["prompts"]
+        and checks["chunks"] > 0
+        and checks["vector_index"].get("consistent")
+    )
+    return checks
+
+
+@app.get("/ready")
+def ready() -> dict[str, Any]:
+    snapshot = readiness_snapshot()
+    if not snapshot["ready"]:
+        raise HTTPException(status_code=503, detail=snapshot)
+    return snapshot
 
 
 @app.get("/documents")
