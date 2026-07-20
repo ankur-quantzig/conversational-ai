@@ -3,12 +3,19 @@ from __future__ import annotations
 import base64
 import json
 import mimetypes
+import os
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
 
 from app.config import databricks_chat_endpoint, databricks_host, databricks_token, databricks_transcription_endpoint, databricks_vision_endpoint
+
+
+# Cache for the OAuth token minted from Databricks Apps service-principal credentials.
+_oauth_token_cache: dict[str, Any] = {"token": "", "expires_at": 0.0}
 
 
 def runtime_host_token() -> tuple[str, str]:
@@ -38,13 +45,60 @@ def runtime_host_token() -> tuple[str, str]:
     return "", ""
 
 
+def oauth_token_from_app_credentials(host: str) -> str:
+    """Mint a short-lived bearer token from Databricks Apps service-principal credentials.
+
+    Databricks Apps inject DATABRICKS_CLIENT_ID and DATABRICKS_CLIENT_SECRET for the
+    app's service principal. Exchange them for an OAuth token via the workspace OIDC
+    token endpoint (client-credentials grant). This is how a non-notebook runtime
+    (uvicorn in a Databricks App) authenticates to serving endpoints, since no PAT is
+    configured and no dbutils runtime token is available.
+    """
+    client_id = (os.getenv("DATABRICKS_CLIENT_ID") or "").strip()
+    client_secret = (os.getenv("DATABRICKS_CLIENT_SECRET") or "").strip()
+    if not host or not client_id or not client_secret:
+        return ""
+
+    now = time.time()
+    cached = _oauth_token_cache
+    if cached["token"] and cached["expires_at"] - 60 > now:
+        return cached["token"]
+
+    basic = base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("ascii")
+    body = urllib.parse.urlencode({"grant_type": "client_credentials", "scope": "all-apis"}).encode("utf-8")
+    request = urllib.request.Request(
+        f"{host}/oidc/v1/token",
+        data=body,
+        headers={
+            "Authorization": f"Basic {basic}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return ""
+
+    token = data.get("access_token", "")
+    if token:
+        cached["token"] = token
+        cached["expires_at"] = now + float(data.get("expires_in", 3600))
+    return token
+
+
 def serving_auth() -> tuple[str, str]:
     host = databricks_host()
     token = databricks_token()
     if host and token:
         return host, token
     runtime_host, runtime_token = runtime_host_token()
-    return host or runtime_host, token or runtime_token
+    host = host or runtime_host
+    token = token or runtime_token
+    if host and not token:
+        token = oauth_token_from_app_credentials(host)
+    return host, token
 
 
 def invoke_endpoint(endpoint_name: str, payload: dict[str, Any], timeout: int = 120) -> dict[str, Any]:
