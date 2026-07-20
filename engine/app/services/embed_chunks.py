@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ from app.utils.files import output_dir
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
 DEFAULT_EMBEDDING_DIMENSIONS = 3072
 DEFAULT_BATCH_SIZE = 64
+DEFAULT_DATABRICKS_INPUT_MAX_CHARS = 1800
 
 
 def embedding_config() -> tuple[str, int]:
@@ -57,7 +59,14 @@ def embed_chunks(chunks: list[dict[str, Any]], model: str | None = None, dimensi
     configured_model, configured_dimensions = embedding_config()
     model = model or configured_model
     dimensions = dimensions or configured_dimensions
-    texts = [chunk["content"] for chunk in chunks]
+    max_chars = int(
+        os.getenv("EMBEDDING_INPUT_MAX_CHARS")
+        or (DEFAULT_DATABRICKS_INPUT_MAX_CHARS if llm_provider() == "databricks" else 0)
+    )
+    texts = [
+        str(chunk["content"])[:max_chars] if max_chars > 0 else str(chunk["content"])
+        for chunk in chunks
+    ]
     vectors = embed_texts(texts, model=model, dimensions=dimensions)
     embedded = []
     for chunk, vector in zip(chunks, vectors, strict=True):

@@ -42,6 +42,7 @@ def main() -> None:
         is_unsupported_answer,
         parse_question_preparation,
         prepare_retrieval_question,
+        question_has_explicit_subject,
     )
 
     parsed = parse_question_preparation(
@@ -65,6 +66,11 @@ def main() -> None:
     assert vague.status == "needs_clarification"
     assert vague.issue == "vague"
     assert vague.clarification_question.endswith("?")
+
+    assert question_has_explicit_subject(
+        "What is the main objective of the Conversational AI POC?"
+    )
+    assert not question_has_explicit_subject("What is it?")
 
     assert is_unsupported_answer(INSUFFICIENT_EVIDENCE_MESSAGE)
 

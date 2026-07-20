@@ -29,6 +29,12 @@ VAGUE_QUESTION_RE = re.compile(
     r"^(tell me more|explain( it| that)?|what about (it|that|this)|why|how so|more details|summarize)$",
     re.IGNORECASE,
 )
+SUBJECTLESS_TERMS = {
+    "about", "are", "can", "could", "describe", "details", "does", "explain",
+    "for", "from", "give", "how", "information", "is", "it", "main", "more",
+    "objective", "of", "please", "tell", "that", "the", "them", "they", "this",
+    "what", "which", "why", "you",
+}
 
 
 class AnswerCitation(BaseModel):
@@ -368,6 +374,15 @@ def deterministic_question_preparation(question: str) -> QuestionPreparation:
     )
 
 
+def question_has_explicit_subject(question: str) -> bool:
+    tokens = {
+        token.lower()
+        for token in re.findall(r"[a-z0-9][a-z0-9-]*", question, flags=re.IGNORECASE)
+        if len(token) >= 2
+    }
+    return bool(tokens - SUBJECTLESS_TERMS)
+
+
 def plan_conversation_question(question: str, history: list[dict[str, Any]], model: str | None = None) -> ConversationQuestionPlan:
     cleaned_question = " ".join(question.strip().split())
     if not history:
@@ -466,6 +481,18 @@ def prepare_retrieval_question(question: str, model: str | None = None) -> Quest
         )
         plan = parse_question_preparation(response.output_text)
 
+    if plan.status == "needs_clarification" and question_has_explicit_subject(cleaned_question):
+        plan = QuestionPreparation(
+            status="ready",
+            rephrased_question=cleaned_question,
+            clarification_question="",
+            issue="none",
+            confidence_score=max(0.8, plan.confidence_score),
+            reason=(
+                "The question names an explicit subject, so retrieval should determine "
+                "whether the available sources can answer it."
+            ),
+        )
     plan = normalize_question_preparation(plan, fallback_question=cleaned_question)
     _llm_cache.set(key, plan.model_dump())
     return plan

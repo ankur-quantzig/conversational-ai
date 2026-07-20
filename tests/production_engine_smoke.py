@@ -43,6 +43,8 @@ def main() -> None:
     from app.rag.context import select_context_sources
     from app.rag.grounding import calibrate_answer, validate_citations
     import app.clients.databricks_model_serving as serving
+    from app.clients.lancedb_store import index_coverage_status
+    from app.services.embed_chunks import DEFAULT_DATABRICKS_INPUT_MAX_CHARS
 
     for technical_stage in ("bm25_search", "vector_search", "deduplicating_chunks", "reranking_chunks"):
         payload = public_progress_payload({"stage": technical_stage, "request_id": "request-1"})
@@ -51,6 +53,10 @@ def main() -> None:
         assert "vector" not in rendered
         assert "chunk" not in rendered
         assert "rerank" not in rendered
+
+    assert index_coverage_status(321, 29)["consistent"] is False
+    assert index_coverage_status(321, 321)["consistent"] is True
+    assert DEFAULT_DATABRICKS_INPUT_MAX_CHARS > 0
 
     vague = deterministic_question_preparation("Tell me more")
     assert vague.status == "needs_clarification"
@@ -119,6 +125,7 @@ def main() -> None:
     original_bm25 = retrieval_module.retrieve_bm25_chunks
     original_vector = retrieval_module.lancedb_retrieve
     original_chunks = retrieval_module.load_chunks
+    original_index_status = retrieval_module.vector_index_status
     try:
         retrieval_module.generate_similar_questions = lambda question: [question]
         retrieval_module.retrieve_bm25_chunks = lambda **kwargs: [
@@ -130,6 +137,7 @@ def main() -> None:
             source("hybrid-3", "doc-c", "Limitations evidence supports the question.", pages=[3]),
         ]
         retrieval_module.load_chunks = lambda: []
+        retrieval_module.vector_index_status = lambda chunks: {"consistent": True}
         stages = []
         hybrid = retrieval_module.retrieve_hybrid_sources(
             "What architecture and evaluation evidence is available?",
@@ -145,6 +153,7 @@ def main() -> None:
         retrieval_module.retrieve_bm25_chunks = original_bm25
         retrieval_module.lancedb_retrieve = original_vector
         retrieval_module.load_chunks = original_chunks
+        retrieval_module.vector_index_status = original_index_status
 
     gates = evaluate_release_gates({"hit_rate": 0.9, "mean_reciprocal_rank": 0.8, "expected_doc_recall": 0.8})
     assert gates["passed"] is True

@@ -33,7 +33,7 @@ from app.config import (
     llm_provider,
     retrieval_top_k,
 )
-from app.clients.lancedb_store import DEFAULT_TABLE_NAME, open_table
+from app.clients.lancedb_store import DEFAULT_TABLE_NAME, open_table, vector_index_status
 from app.db.postgres import get_connection, init_db, wait_for_database
 from app.rag.answer import (
     DEFAULT_CLARIFICATION_QUESTION,
@@ -489,6 +489,7 @@ def runtime_diagnostics(user: UserContext = Depends(current_user)) -> dict[str, 
         "llm_provider": llm_provider(),
         "chunks": len(load_chunks()),
         "vector_db": {"table": DEFAULT_TABLE_NAME, "rows": vector_rows, "error": vector_error},
+        "vector_index": vector_index_status(load_chunks()),
         "databricks": {
             "host_configured": bool(databricks_host()),
             "token_configured": bool(databricks_token()),
