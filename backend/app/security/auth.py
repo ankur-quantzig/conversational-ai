@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import getpass
+import re
 from dataclasses import dataclass, field
 
 from typing import Annotated
 
 from fastapi import Header, HTTPException, status
 
-from app.config import app_api_keys, basic_users, is_databricks_env, is_local_env, power_users
+from app.config import app_api_keys, basic_users, is_databricks_env, is_local_env, local_dev_email, local_dev_name, power_users
 
 
 @dataclass(frozen=True)
@@ -53,10 +55,17 @@ def current_user(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Authentication is not configured",
             )
+        # Local dev has no SSO. Prefer a forwarded identity if a proxy provides one,
+        # otherwise fall back to the machine's logged-in user (or a generic default).
+        forwarded_email = _first_non_empty(x_databricks_user_email, x_forwarded_email, x_forwarded_user).lower()
+        if forwarded_email:
+            email, name = forwarded_email, ""
+        else:
+            email, name = _local_dev_user()
         return UserContext(
-            user_id="local-dev",
-            email="ankurkumarj@quantzig.com",
-            name="Ankur Kumar",
+            user_id=email or "local-dev",
+            email=email,
+            name=name,
             roles=["admin", "power_user"],
             document_ids=["*"],
         )
@@ -91,6 +100,31 @@ def _first_non_empty(*values: str | None) -> str:
         if value and value.strip():
             return value.strip()
     return ""
+
+
+def _local_dev_user() -> tuple[str, str]:
+    """Resolve the local-dev identity.
+
+    Precedence: explicit LOCAL_DEV_EMAIL/LOCAL_DEV_NAME env overrides, then the
+    machine's logged-in OS user, then a generic default. No identity is hardcoded.
+    """
+    email = local_dev_email()
+    name = local_dev_name()
+
+    os_user = ""
+    try:
+        os_user = (getpass.getuser() or "").strip()
+    except Exception:
+        os_user = ""
+
+    if not email:
+        email = f"{os_user.lower()}@local" if os_user else "local-dev@local"
+    if not name:
+        if os_user:
+            name = " ".join(part.capitalize() for part in re.split(r"[._\-\s]+", os_user) if part)
+        else:
+            name = "Developer"
+    return email, name
 
 
 def _roles_for(email: str, payload_roles: object) -> list[str]:
