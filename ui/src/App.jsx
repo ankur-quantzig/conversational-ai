@@ -3,6 +3,7 @@ import {
   ArrowDown,
   BotMessageSquare,
   BookOpen,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Check,
@@ -15,6 +16,7 @@ import {
   Pencil,
   Pin,
   PinOff,
+  Printer,
   RotateCcw,
   Search,
   Send,
@@ -697,7 +699,7 @@ function ResponseDiagram({ diagram }) {
   )
 }
 
-function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry, onEdit, isSending }) {
+function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry, onEdit, isSending, isLast }) {
   const isUser = message.role === 'user'
   const Icon = isUser ? CircleUserRound : BotMessageSquare
   const [openSource, setOpenSource] = useState(null)
@@ -705,6 +707,18 @@ function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry
   const [justCopied, setJustCopied] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
   const [draft, setDraft] = useState('')
+  const [collapsed, setCollapsed] = useState(false)
+  const [collapsible, setCollapsible] = useState(false)
+  const bubbleRef = useRef(null)
+
+  useEffect(() => {
+    if (isUser || message.pending || isLast || collapsible) return
+    const el = bubbleRef.current
+    if (el && el.scrollHeight > 560) {
+      setCollapsible(true)
+      setCollapsed(true)
+    }
+  }, [isUser, message.pending, isLast, collapsible])
   const citations = !isUser ? buildDisplayCitations(message) : []
   const activeCitation = openSource === null ? null : citations[openSource]
   const stageLabel = {
@@ -799,9 +813,14 @@ function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry
             </div>
           </div>
         ) : (
-          <div className={`bubble ${isUser ? 'bubble--user' : 'bubble--assistant'}`}>
+          <div
+            ref={bubbleRef}
+            className={`bubble ${isUser ? 'bubble--user' : 'bubble--assistant'} ${collapsible && collapsed ? 'is-collapsed' : ''}`}
+          >
             {!isUser && message.heading && !message.pending ? <h2 className="response-heading">{message.heading}</h2> : null}
-            {!isUser && message.progressSteps?.length && message.pending ? <AgentRunTimeline steps={message.progressSteps} activeStatus={message.status} /> : null}
+            {!isUser && message.pending && !message.content && message.progressSteps?.length ? (
+              <AgentStatusLine steps={message.progressSteps} />
+            ) : null}
             {message.content ? (
               <CitationContext.Provider value={citationContext}>
                 <StructuredContent text={message.content}>
@@ -809,7 +828,7 @@ function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry
                   <CitationList items={citations} openSource={openSource} onToggle={toggleSource} />
                 </StructuredContent>
               </CitationContext.Provider>
-            ) : !isUser && message.pending ? (
+            ) : !isUser && message.pending && !message.progressSteps?.length ? (
               <div className="typing-indicator" role="status" aria-label="Agent is responding">
                 <span />
                 <span />
@@ -840,6 +859,11 @@ function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry
             ) : null}
           </div>
         )}
+        {!isUser && collapsible ? (
+          <button type="button" className="bubble-toggle" aria-expanded={!collapsed} onClick={() => setCollapsed((value) => !value)}>
+            {collapsed ? 'Show more' : 'Show less'}
+          </button>
+        ) : null}
         {!isUser && !message.pending ? (
           <div className="message__meta">
             <div className="message-actions" aria-label="Message actions">
@@ -931,19 +955,31 @@ function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry
   )
 }
 
-function AgentRunTimeline({ steps }) {
-  const visibleSteps = steps.slice(-8)
+function AgentStatusLine({ steps }) {
+  const [open, setOpen] = useState(false)
+  const current = steps[steps.length - 1]
   return (
-    <div className="agent-run" aria-label="Agent progress">
-      {visibleSteps.map((step, index) => {
-        const isLast = index === visibleSteps.length - 1
-        return (
-          <div className={`agent-run__step ${isLast ? 'is-active' : 'is-complete'}`} key={`${step.stage}-${index}`}>
-            <span className="agent-run__dot" />
-            <span>{step.message}</span>
-          </div>
-        )
-      })}
+    <div className="agent-status" aria-label="Agent progress">
+      <button
+        type="button"
+        className="agent-status__line"
+        aria-expanded={open}
+        title={open ? 'Hide steps' : 'Show all steps'}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="agent-status__dot" aria-hidden="true" />
+        <span className="agent-status__text">{current.message}…</span>
+        <ChevronDown size={13} className={open ? 'is-open' : ''} aria-hidden="true" />
+      </button>
+      {open ? (
+        <div className="agent-status__steps">
+          {steps.map((step, index) => (
+            <span key={`${step.stage}-${index}`} className={index === steps.length - 1 ? 'is-active' : ''}>
+              {step.message}
+            </span>
+          ))}
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -1815,10 +1851,21 @@ export function App() {
           </button>
           <div className="topbar__title">
             <img src={logoUrl} alt="" />
-            <strong>Insight Copilot</strong>
+            <h1>Insight Copilot</h1>
             {activeDocument ? <span>{activeDocument.title}</span> : null}
           </div>
           <div className="topbar__actions">
+            {messages.length ? (
+              <button
+                className="icon-button"
+                type="button"
+                aria-label="Print or save conversation as PDF"
+                title="Print / save as PDF"
+                onClick={() => window.print()}
+              >
+                <Printer size={18} />
+              </button>
+            ) : null}
             <button
               className="icon-button"
               type="button"
@@ -1853,10 +1900,11 @@ export function App() {
               }}
             >
               {messages.length ? (
-                messages.map((message) => (
+                messages.map((message, index) => (
                   <ChatMessage
                     key={message.id}
                     message={message}
+                    isLast={index === messages.length - 1}
                     onCopy={copyAnswer}
                     onFeedback={sendFeedback}
                     onShare={shareMessage}
@@ -1871,10 +1919,10 @@ export function App() {
                   <div className="empty-chat__mark">
                     <img src={logoUrl} alt="" />
                   </div>
-                  <h1>
+                  <h2>
                     {timeGreeting()}
                     {firstNameFrom(me) ? `, ${firstNameFrom(me)}` : ''}
-                  </h1>
+                  </h2>
                   <p>Ask anything about your indexed documents and videos.</p>
                   <SuggestedQuestions examples={starterExamples} disabled={isSending} onSelect={submitQuestion} />
                 </div>

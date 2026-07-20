@@ -47,5 +47,8 @@ tools/
 # Docker/local overrides
 docker-compose.override.yml
 
+# Databricks CLI sync state
+.databricks/
+
 # Local design docs
 ui/DESIGN_SPEC.md
