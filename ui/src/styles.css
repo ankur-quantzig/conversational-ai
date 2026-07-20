@@ -618,21 +618,13 @@ select {
   color: #08745b;
 }
 
-.stage-pill--checking_access,
-.stage-pill--guardrail_check,
-.stage-pill--question_analysis,
-.stage-pill--question_ready,
-.stage-pill--creating_subquestions,
-.stage-pill--subquestions_ready,
-.stage-pill--bm25_search,
-.stage-pill--vector_search,
-.stage-pill--cache_hit,
-.stage-pill--deduplicating_chunks,
-.stage-pill--reranking_chunks,
-.stage-pill--generating_answer,
-.stage-pill--creating_followups,
-.stage-pill--diagram_check,
-.stage-pill--saving_conversation {
+.stage-pill--getting_ready,
+.stage-pill--understanding,
+.stage-pill--finding_information,
+.stage-pill--reviewing_information,
+.stage-pill--preparing_answer,
+.stage-pill--finishing_up,
+.stage-pill--working {
   background: #eef2f7;
   color: #475569;
 }
@@ -1641,21 +1633,13 @@ textarea:disabled {
   color: #4cd6ab;
 }
 
-[data-theme="dark"] .stage-pill--checking_access,
-[data-theme="dark"] .stage-pill--guardrail_check,
-[data-theme="dark"] .stage-pill--question_analysis,
-[data-theme="dark"] .stage-pill--question_ready,
-[data-theme="dark"] .stage-pill--creating_subquestions,
-[data-theme="dark"] .stage-pill--subquestions_ready,
-[data-theme="dark"] .stage-pill--bm25_search,
-[data-theme="dark"] .stage-pill--vector_search,
-[data-theme="dark"] .stage-pill--cache_hit,
-[data-theme="dark"] .stage-pill--deduplicating_chunks,
-[data-theme="dark"] .stage-pill--reranking_chunks,
-[data-theme="dark"] .stage-pill--generating_answer,
-[data-theme="dark"] .stage-pill--creating_followups,
-[data-theme="dark"] .stage-pill--diagram_check,
-[data-theme="dark"] .stage-pill--saving_conversation {
+[data-theme="dark"] .stage-pill--getting_ready,
+[data-theme="dark"] .stage-pill--understanding,
+[data-theme="dark"] .stage-pill--finding_information,
+[data-theme="dark"] .stage-pill--reviewing_information,
+[data-theme="dark"] .stage-pill--preparing_answer,
+[data-theme="dark"] .stage-pill--finishing_up,
+[data-theme="dark"] .stage-pill--working {
   background: #26282c;
   color: #a7b0bd;
 }

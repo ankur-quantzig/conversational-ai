@@ -11,6 +11,9 @@ MIN_RETRIEVAL_TOP_K = 1
 MAX_RETRIEVAL_TOP_K = 10
 DEFAULT_RATE_LIMIT_PER_MINUTE = 30
 DEFAULT_BASIC_USER_QUESTION_LIMIT = 10
+DEFAULT_RETRIEVAL_CANDIDATE_K = 12
+DEFAULT_CONTEXT_MAX_CHUNKS = 6
+DEFAULT_CONTEXT_TOKEN_BUDGET = 6000
 DEFAULT_POWER_USERS = {"ankurkumarj@quantzig.com"}
 DEFAULT_BASIC_USERS = {
     "surajc@quantzig.com",
@@ -52,6 +55,36 @@ def retrieval_top_k() -> int:
     except ValueError:
         return DEFAULT_RETRIEVAL_TOP_K
     return max(MIN_RETRIEVAL_TOP_K, min(MAX_RETRIEVAL_TOP_K, value))
+
+
+def retrieval_candidate_k() -> int:
+    return _bounded_int("RETRIEVAL_CANDIDATE_K", DEFAULT_RETRIEVAL_CANDIDATE_K, 4, 50)
+
+
+def context_max_chunks() -> int:
+    return _bounded_int("CONTEXT_MAX_CHUNKS", DEFAULT_CONTEXT_MAX_CHUNKS, 1, 12)
+
+
+def context_token_budget() -> int:
+    return _bounded_int("CONTEXT_TOKEN_BUDGET", DEFAULT_CONTEXT_TOKEN_BUDGET, 500, 20000)
+
+
+def reranker_provider() -> str:
+    load_dotenv_file()
+    value = (env_value("RERANKER_PROVIDER") or "lexical").strip().lower()
+    return value if value in {"lexical", "model"} else "lexical"
+
+
+def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    load_dotenv_file()
+    raw_value = env_value(name)
+    if not raw_value:
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return default
+    return max(minimum, min(maximum, value))
 
 
 def rate_limit_per_minute() -> int:

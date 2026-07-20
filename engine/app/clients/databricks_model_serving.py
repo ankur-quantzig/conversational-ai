@@ -4,18 +4,26 @@ import base64
 import json
 import mimetypes
 import os
+import random
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 from app.config import databricks_chat_endpoint, databricks_host, databricks_token, databricks_transcription_endpoint, databricks_vision_endpoint
+from app.rag.usage import record_model_usage
 
 
 # Cache for the OAuth token minted from Databricks Apps service-principal credentials.
 _oauth_token_cache: dict[str, Any] = {"token": "", "expires_at": 0.0}
+_circuit_state: dict[str, Any] = {"failures": 0, "opened_at": 0.0}
+_circuit_lock = RLock()
+MAX_RETRIES = 3
+CIRCUIT_FAILURE_THRESHOLD = 5
+CIRCUIT_RESET_SECONDS = 30
 
 
 def runtime_host_token() -> tuple[str, str]:
@@ -101,54 +109,93 @@ def serving_auth() -> tuple[str, str]:
     return host, token
 
 
-def invoke_endpoint(endpoint_name: str, payload: dict[str, Any], timeout: int = 120) -> dict[str, Any]:
-    host, token = serving_auth()
-    if not host:
-        raise RuntimeError("DATABRICKS_HOST is required for Databricks model serving")
-    if not token:
-        raise RuntimeError("DATABRICKS_TOKEN is required for Databricks model serving")
+def _circuit_allows_request() -> bool:
+    with _circuit_lock:
+        if _circuit_state["failures"] < CIRCUIT_FAILURE_THRESHOLD:
+            return True
+        if time.monotonic() - _circuit_state["opened_at"] >= CIRCUIT_RESET_SECONDS:
+            _circuit_state["failures"] = 0
+            _circuit_state["opened_at"] = 0.0
+            return True
+        return False
 
-    url = f"{host}/serving-endpoints/{endpoint_name}/invocations"
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"Databricks endpoint `{endpoint_name}` failed with HTTP {exc.code}: {detail[:500]}") from exc
+
+def _record_serving_success() -> None:
+    with _circuit_lock:
+        _circuit_state["failures"] = 0
+        _circuit_state["opened_at"] = 0.0
+
+
+def _record_serving_failure() -> None:
+    with _circuit_lock:
+        _circuit_state["failures"] += 1
+        if _circuit_state["failures"] >= CIRCUIT_FAILURE_THRESHOLD:
+            _circuit_state["opened_at"] = time.monotonic()
+
+
+def _send_json_request(request_factory, timeout: int, operation: str) -> dict[str, Any]:
+    if not _circuit_allows_request():
+        raise RuntimeError(f"{operation} is temporarily unavailable after repeated provider failures")
+
+    last_error: Exception | None = None
+    for attempt in range(MAX_RETRIES):
+        request = request_factory()
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            _record_serving_success()
+            return data
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="ignore")
+            last_error = RuntimeError(f"{operation} failed with HTTP {exc.code}: {detail[:500]}")
+            retryable = exc.code == 429 or 500 <= exc.code < 600
+            if exc.code == 401:
+                _oauth_token_cache["token"] = ""
+                _oauth_token_cache["expires_at"] = 0.0
+            if not retryable or attempt + 1 >= MAX_RETRIES:
+                break
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last_error = RuntimeError(f"{operation} failed: {type(exc).__name__}")
+            if attempt + 1 >= MAX_RETRIES:
+                break
+        time.sleep(min(2.0, (0.25 * (2**attempt)) + random.uniform(0.0, 0.15)))
+
+    _record_serving_failure()
+    raise last_error or RuntimeError(f"{operation} failed")
+
+
+def invoke_endpoint(endpoint_name: str, payload: dict[str, Any], timeout: int = 120) -> dict[str, Any]:
+    def request_factory():
+        host, token = serving_auth()
+        if not host:
+            raise RuntimeError("DATABRICKS_HOST is required for Databricks model serving")
+        if not token:
+            raise RuntimeError("Databricks model-serving authentication is unavailable")
+        return urllib.request.Request(
+            f"{host}/serving-endpoints/{endpoint_name}/invocations",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            method="POST",
+        )
+
+    return _send_json_request(request_factory, timeout, f"Databricks endpoint `{endpoint_name}`")
 
 
 def invoke_chat_completions(payload: dict[str, Any], timeout: int = 120) -> dict[str, Any]:
-    host, token = serving_auth()
-    if not host:
-        raise RuntimeError("DATABRICKS_HOST is required for Databricks model serving")
-    if not token:
-        raise RuntimeError("DATABRICKS_TOKEN is required for Databricks model serving")
+    def request_factory():
+        host, token = serving_auth()
+        if not host:
+            raise RuntimeError("DATABRICKS_HOST is required for Databricks model serving")
+        if not token:
+            raise RuntimeError("Databricks model-serving authentication is unavailable")
+        return urllib.request.Request(
+            f"{host}/ai-gateway/mlflow/v1/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            method="POST",
+        )
 
-    url = f"{host}/ai-gateway/mlflow/v1/chat/completions"
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"Databricks chat completions failed with HTTP {exc.code}: {detail[:500]}") from exc
+    return _send_json_request(request_factory, timeout, "Databricks chat completions")
 
 
 def chat_completion(
@@ -164,6 +211,7 @@ def chat_completion(
         "max_tokens": max_tokens,
     }
     data = invoke_endpoint(endpoint_name, payload, timeout=120)
+    record_model_usage(data.get("usage") or {}, model=endpoint_name)
     return extract_message_content(data)
 
 
@@ -171,6 +219,7 @@ def embeddings(texts: list[str], endpoint: str | None = None) -> list[list[float
     endpoint_name = endpoint or "databricks-bge-large-en"
     payload = {"input": texts}
     data = invoke_endpoint(endpoint_name, payload, timeout=120)
+    record_model_usage(data.get("usage") or {}, model=endpoint_name)
     return extract_embeddings(data)
 
 

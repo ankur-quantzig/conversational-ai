@@ -34,7 +34,7 @@ ATTACK_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\b(printenv|cat /etc/passwd|rm -rf|chmod|curl\s+|wget\s+|powershell|cmd\.exe|bash\s+-c)\b", re.I), "shell command"),
     (re.compile(r"\b(select \* from|union select|drop table|insert into|delete from|information_schema)\b", re.I), "SQL injection"),
     (re.compile(r"\b(api[_-]?key|secret|password|token|credential|private key)\b.*\b(show|print|reveal|extract|dump|exfiltrate)\b", re.I), "secret extraction"),
-    (re.compile(r"\b(exfiltrate|leak|dump|steal|send.*outside|upload.*data)\b", re.I), "data exfiltration"),
+    (re.compile(r"\b(exfiltrate|leak|dump|steal|send.*outside|upload.*(?:data|documents?|files?).*outside)\b", re.I), "data exfiltration"),
 ]
 
 BASE64_RE = re.compile(r"\b[A-Za-z0-9+/]{40,}={0,2}\b")
@@ -152,7 +152,7 @@ def databricks_query_check(question: str, endpoint: str) -> QuerySecurityResult:
 
 def llm_query_check(question: str, model: str) -> QuerySecurityResult:
     load_dotenv_file()
-    client = OpenAI(api_key=env_value("OPENAI_API_KEY", "OPANAI_API_KEY"))
+    client = OpenAI(api_key=env_value("OPENAI_API_KEY", "OPANAI_API_KEY"), max_retries=1, timeout=30)
     prompt = guardrail_prompt(question)
     response = client.responses.create(
         model=model,

@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.retrieval import answer_question, list_documents, load_chunks
+from app.api.telemetry import pipeline_metrics_snapshot
 from app.config import (
     app_env,
     cors_origins,
@@ -37,6 +38,7 @@ from app.db.postgres import get_connection, init_db, wait_for_database
 from app.rag.answer import (
     DEFAULT_CLARIFICATION_QUESTION,
     QuestionPreparation,
+    deterministic_question_preparation,
     generate_follow_up_questions,
     plan_conversation_question,
     prepare_retrieval_question,
@@ -82,6 +84,7 @@ class ChatResponse(BaseModel):
     diagram: dict[str, Any] = Field(default_factory=dict)
     question_analysis: dict[str, Any] = Field(default_factory=dict)
     security: dict[str, Any] = Field(default_factory=dict)
+    telemetry: dict[str, Any] = Field(default_factory=dict)
     elapsed_ms: int | None = None
 
 
@@ -149,7 +152,52 @@ def elapsed_ms_since(started_at: float) -> int:
     return max(0, int((time.perf_counter() - started_at) * 1000))
 
 
+USER_PROGRESS = {
+    "agent_ready": ("getting_ready", "Getting ready"),
+    "checking_access": ("understanding", "Understanding your request"),
+    "guardrail_check": ("understanding", "Understanding your request"),
+    "question_analysis": ("understanding", "Understanding your question"),
+    "question_rephrasing": ("understanding", "Understanding your question"),
+    "question_ready": ("understanding", "Your question is clear"),
+    "creating_subquestions": ("finding_information", "Planning the best way to help"),
+    "subquestions_ready": ("finding_information", "Looking through the available information"),
+    "embedding_query": ("finding_information", "Looking through the available information"),
+    "bm25_search": ("finding_information", "Finding the most relevant information"),
+    "vector_search": ("finding_information", "Finding the most relevant information"),
+    "retrieving_chunks": ("finding_information", "Finding the most relevant information"),
+    "deduplicating_chunks": ("reviewing_information", "Reviewing the best supporting information"),
+    "reranking_chunks": ("reviewing_information", "Reviewing the best supporting information"),
+    "context_selection": ("reviewing_information", "Reviewing the best supporting information"),
+    "cache_hit": ("finding_information", "Reusing a recent verified result"),
+    "fallback_search": ("finding_information", "Trying another way to find the answer"),
+    "generating_answer": ("preparing_answer", "Preparing a clear answer"),
+    "validating_answer": ("preparing_answer", "Checking the answer against the sources"),
+    "creating_followups": ("finishing_up", "Adding helpful next questions"),
+    "diagram_check": ("finishing_up", "Finishing your response"),
+    "saving_conversation": ("finishing_up", "Finishing your response"),
+    "complete": ("complete", "Your answer is ready"),
+    "writing": ("writing", ""),
+    "final_response": ("final_response", "Final response"),
+}
+
+
+def public_progress_payload(data: dict[str, Any]) -> dict[str, Any]:
+    technical_stage = str(data.get("stage") or "thinking")
+    public_stage, public_message = USER_PROGRESS.get(
+        technical_stage,
+        ("working", "Working on your answer"),
+    )
+    return {
+        "stage": public_stage,
+        "message": public_message,
+        "metadata": {},
+        "request_id": data.get("request_id", ""),
+    }
+
+
 def sse_event(event: str, data: dict[str, Any]) -> str:
+    if event in {"progress", "status"} and data.get("stage"):
+        data = public_progress_payload(data)
     payload = json.dumps(data, default=str, ensure_ascii=False)
     return f"event: {event}\ndata: {payload}\n\n"
 
@@ -209,14 +257,8 @@ def safe_prepare_retrieval_question(question: str) -> tuple[str, dict[str, Any]]
     try:
         plan = prepare_retrieval_question(cleaned_question)
     except Exception as exc:
-        plan = QuestionPreparation(
-            status="ready",
-            rephrased_question=cleaned_question,
-            clarification_question="",
-            issue="none",
-            confidence_score=0.0,
-            reason=f"Question preparation unavailable: {type(exc).__name__}",
-        )
+        plan = deterministic_question_preparation(cleaned_question)
+        plan.reason = f"{plan.reason} Model preparation unavailable: {type(exc).__name__}."
     payload = plan.model_dump()
     return plan.rephrased_question, payload
 
@@ -319,6 +361,7 @@ def run_answer_pipeline_with_progress(
     top_k: int,
     doc_id: str | None,
     source_type: str | None,
+    cache_namespace: str,
     request_id: str,
 ):
     progress_events: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
@@ -344,6 +387,8 @@ def run_answer_pipeline_with_progress(
                 top_k=top_k,
                 doc_id=doc_id,
                 source_type=source_type,
+                cache_namespace=cache_namespace,
+                trace_id=request_id,
                 progress=progress,
             )
         except Exception as exc:
@@ -451,6 +496,7 @@ def runtime_diagnostics(user: UserContext = Depends(current_user)) -> dict[str, 
             "embedding_endpoint": databricks_embedding_endpoint(),
         },
         "embedding_summaries": embedding_summaries,
+        "rag_metrics": pipeline_metrics_snapshot(),
     }
 
 
@@ -631,6 +677,8 @@ def chat(chat_request: ChatRequest, request: Request, user: UserContext = Depend
         top_k=effective_top_k,
         doc_id=selected_doc_id,
         source_type=None if chat_request.source_type in (None, "", "all") else chat_request.source_type,
+        cache_namespace=f"{user.tenant_id}:{user.user_id}",
+        trace_id=request_id,
     )
     answer = rag_response["answer"]
     sources = rag_response["sources"]
@@ -638,6 +686,7 @@ def chat(chat_request: ChatRequest, request: Request, user: UserContext = Depend
     follow_up_questions = safe_follow_up_questions(question=effective_question, answer=answer, sources=sources)
     diagram = {}
     elapsed_ms = elapsed_ms_since(started_at)
+    rag_response.setdefault("telemetry", {})["request_total_ms"] = elapsed_ms
 
     assistant_message_id = persist_chat_turn(
         session_id=session_id,
@@ -658,6 +707,7 @@ def chat(chat_request: ChatRequest, request: Request, user: UserContext = Depend
             "heading": heading,
             "missing_information": rag_response.get("missing_information", ""),
             "security": {**security.model_dump(), "quota": quota},
+            "telemetry": rag_response.get("telemetry", {}),
             "elapsed_ms": elapsed_ms,
         },
         existing_session=bool(chat_request.session_id),
@@ -685,6 +735,7 @@ def chat(chat_request: ChatRequest, request: Request, user: UserContext = Depend
         diagram=diagram,
         question_analysis=question_analysis,
         security={**security.model_dump(), "quota": quota},
+        telemetry=rag_response.get("telemetry", {}),
         elapsed_ms=elapsed_ms,
     )
 
@@ -805,7 +856,6 @@ def chat_stream(chat_request: ChatRequest, request: Request, user: UserContext =
                 yield sse_event("status", {"stage": "writing", "message": "", "request_id": request_id})
                 for delta in answer_deltas(response.answer):
                     yield sse_event("answer_delta", {"delta": delta, "request_id": request_id})
-                    time.sleep(0.025)
                 yield sse_event("progress", {"stage": "complete", "message": "Response ready", "metadata": {}, "request_id": request_id})
                 yield sse_event("status", {"stage": "final_response", "message": "Final response", "request_id": request_id})
                 yield sse_event("final", response.model_dump())
@@ -818,6 +868,7 @@ def chat_stream(chat_request: ChatRequest, request: Request, user: UserContext =
                 top_k=effective_top_k,
                 doc_id=selected_doc_id,
                 source_type=source_type,
+                cache_namespace=f"{user.tenant_id}:{user.user_id}",
                 request_id=request_id,
             ):
                 if event == "pipeline_result":
@@ -833,11 +884,11 @@ def chat_stream(chat_request: ChatRequest, request: Request, user: UserContext =
             yield sse_event("status", {"stage": "writing", "message": "", "request_id": request_id})
             for delta in answer_deltas(answer):
                 yield sse_event("answer_delta", {"delta": delta, "request_id": request_id})
-                time.sleep(0.025)
             yield sse_event("progress", {"stage": "creating_followups", "message": "Creating follow-up questions", "metadata": {}, "request_id": request_id})
             follow_up_questions = safe_follow_up_questions(question=effective_question, answer=answer, sources=sources)
             diagram = {}
             elapsed_ms = elapsed_ms_since(started_at)
+            rag_response.setdefault("telemetry", {})["request_total_ms"] = elapsed_ms
 
             yield sse_event("progress", {"stage": "saving_conversation", "message": "Saving conversation", "metadata": {}, "request_id": request_id})
             assistant_message_id = persist_chat_turn(
@@ -859,6 +910,7 @@ def chat_stream(chat_request: ChatRequest, request: Request, user: UserContext =
                     "heading": heading,
                     "missing_information": rag_response.get("missing_information", ""),
                     "security": {**security.model_dump(), "quota": quota},
+                    "telemetry": rag_response.get("telemetry", {}),
                     "elapsed_ms": elapsed_ms,
                 },
                 existing_session=bool(chat_request.session_id),
@@ -886,6 +938,7 @@ def chat_stream(chat_request: ChatRequest, request: Request, user: UserContext =
                 diagram=diagram,
                 question_analysis=question_analysis,
                 security={**security.model_dump(), "quota": quota},
+                telemetry=rag_response.get("telemetry", {}),
                 elapsed_ms=elapsed_ms,
             )
             yield sse_event("status", {"stage": "final_response", "message": "Final response", "request_id": request_id})

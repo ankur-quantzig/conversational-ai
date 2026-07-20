@@ -10,6 +10,7 @@ from app.clients.databricks_model_serving import embeddings as databricks_embedd
 from app.clients.document_intelligence import env_value, load_dotenv_file
 from app.config import databricks_embedding_endpoint, llm_provider
 from app.services.chunk_document import load_chunks_jsonl, write_jsonl
+from app.rag.usage import record_model_usage
 from app.utils.files import output_dir
 
 
@@ -35,11 +36,19 @@ def embed_texts(texts: list[str], model: str, dimensions: int, batch_size: int =
             vectors.extend(databricks_embeddings(texts[start : start + batch_size], endpoint=model))
         return vectors
 
-    client = OpenAI(api_key=env_value("OPENAI_API_KEY", "OPANAI_API_KEY"))
+    client = OpenAI(api_key=env_value("OPENAI_API_KEY", "OPANAI_API_KEY"), max_retries=2, timeout=30)
     vectors: list[list[float]] = []
     for start in range(0, len(texts), batch_size):
         batch = texts[start : start + batch_size]
         response = client.embeddings.create(model=model, input=batch, dimensions=dimensions)
+        usage = getattr(response, "usage", None)
+        record_model_usage(
+            {
+                "prompt_tokens": getattr(usage, "prompt_tokens", 0),
+                "total_tokens": getattr(usage, "total_tokens", 0),
+            },
+            model=model,
+        )
         vectors.extend([item.embedding for item in response.data])
     return vectors
 
