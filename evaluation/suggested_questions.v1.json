@@ -1,0 +1,35 @@
+{
+  "version": "1.0",
+  "questions": [
+    {
+      "id": "poc-objective",
+      "question": "What is the main objective of the Conversational AI POC?",
+      "expected_topics": ["proof of concept", "Databricks", "videos", "documents"]
+    },
+    {
+      "id": "transcription-and-ocr",
+      "question": "Why do the videos need both transcription and frame-by-frame OCR?",
+      "expected_topics": ["transcript", "frame-by-frame OCR", "visual content"]
+    },
+    {
+      "id": "video-document-connection",
+      "question": "How should the solution connect video content with related documents?",
+      "expected_topics": ["cross-linking", "video", "documents"]
+    },
+    {
+      "id": "databricks-architecture",
+      "question": "What Databricks architecture was proposed for SharePoint, Auto Loader, and the Bronze-Silver-Gold flow?",
+      "expected_topics": ["SharePoint", "Auto Loader", "Bronze", "Silver", "Gold"]
+    },
+    {
+      "id": "multimodal-processing",
+      "question": "What multi-modal processing techniques are used to extract content from video frames and connect them to SharePoint documents?",
+      "expected_topics": ["transcription", "frame-by-frame OCR", "cross-linking", "SharePoint"]
+    },
+    {
+      "id": "video-metadata",
+      "question": "What metadata is collected and stitched together with video transcripts and OCR data?",
+      "expected_topics": ["video metadata", "transcripts", "OCR", "frame reference"]
+    }
+  ]
+}

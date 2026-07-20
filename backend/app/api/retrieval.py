@@ -18,10 +18,10 @@ from app.rag.answer import INSUFFICIENT_EVIDENCE_MESSAGE, RagAnswer, answer_ques
 from app.clients.lancedb_store import vector_index_status
 from app.rag.retriever import lancedb_retrieve
 from app.config import (
-    answer_confidence_threshold,
     context_max_chunks,
     context_token_budget,
     databricks_embedding_endpoint,
+    grounded_answer_confidence_threshold,
     llm_provider,
     retrieval_candidate_k,
 )
@@ -459,7 +459,9 @@ def structured_answer_is_usable(answer: RagAnswer) -> bool:
         return False
     if answer.missing_information.strip():
         return False
-    return answer.confidence_score >= answer_confidence_threshold()
+    if not answer.citations:
+        return False
+    return answer.confidence_score >= grounded_answer_confidence_threshold()
 
 
 def answer_with_main_pipeline(

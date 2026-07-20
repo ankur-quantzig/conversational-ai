@@ -238,3 +238,14 @@ def answer_confidence_threshold() -> float:
         return max(0.0, min(1.0, float(raw_value)))
     except ValueError:
         return 0.8
+
+
+def grounded_answer_confidence_threshold() -> float:
+    load_dotenv_file()
+    raw_value = env_value("GROUNDED_ANSWER_CONFIDENCE_THRESHOLD")
+    if not raw_value:
+        return 0.65
+    try:
+        return max(0.0, min(1.0, float(raw_value)))
+    except ValueError:
+        return 0.65
