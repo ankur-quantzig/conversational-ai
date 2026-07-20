@@ -306,6 +306,13 @@ function relativeTime(value) {
   return new Intl.DateTimeFormat([], { month: 'short', day: 'numeric' }).format(date)
 }
 
+function timeGreeting() {
+  const hour = new Date().getHours()
+  if (hour < 12) return 'Good morning'
+  if (hour < 17) return 'Good afternoon'
+  return 'Good evening'
+}
+
 function firstNameFrom(profile) {
   const raw = profile?.name || profile?.email || ''
   if (!raw) return ''
@@ -1821,20 +1828,6 @@ export function App() {
               </span>
               <div className="user-badge__meta">
                 <span className="user-badge__email">{me.email}</span>
-                {Number.isFinite(me.question_quota?.limit) && me.question_quota.limit !== null ? (
-                  <>
-                    <span className="user-badge__quota">
-                      {me.question_quota.used} of {me.question_quota.limit} questions used
-                    </span>
-                    <span className="quota-bar" aria-hidden="true">
-                      <span
-                        style={{
-                          width: `${Math.min(100, Math.round((me.question_quota.used / Math.max(1, me.question_quota.limit)) * 100))}%`,
-                        }}
-                      />
-                    </span>
-                  </>
-                ) : null}
               </div>
               <span
                 className={`status-dot ${apiOnline ? 'is-online' : ''}`}
