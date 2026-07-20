@@ -157,20 +157,34 @@ def ensure_lancedb_index() -> None:
     os.chdir(ROOT)
 
     try:
-        from app.clients.lancedb_store import DEFAULT_TABLE_NAME, open_table
+        from app.clients.lancedb_store import DEFAULT_TABLE_NAME, open_table, vector_index_status
+        from app.api.retrieval import load_chunks
     except Exception as exc:
         raise RuntimeError(f"Unable to import LanceDB helpers: {exc}") from exc
 
     table_name = DEFAULT_TABLE_NAME or "rag_chunks"
 
+    rebuild_required = False
     try:
         open_table(table_name)
-        print(f"LanceDB table `{table_name}` already exists.")
-        return
+        status = vector_index_status(load_chunks())
+        if status["consistent"]:
+            print(f"LanceDB table `{table_name}` is ready: {status}.")
+            return
+        else:
+            print(
+                f"WARNING: LanceDB table `{table_name}` is incomplete: {status}. "
+                "Rebuilding embeddings and the index before startup."
+            )
+            rebuild_required = True
     except Exception as exc:
         print(f"LanceDB table `{table_name}` does not exist yet. Reason: {exc}")
+        rebuild_required = True
 
     from app.utils.files import output_dir
+
+    if rebuild_required:
+        rebuild_embeddings()
 
     embedded_dir = output_dir("embeddings")
     embedded_files = sorted(embedded_dir.glob("*-embedded.jsonl"))
@@ -204,6 +218,20 @@ def ensure_lancedb_index() -> None:
     open_table(table_name)
 
     print(f"LanceDB table `{table_name}` built successfully.")
+
+
+def rebuild_embeddings() -> None:
+    from app.services.embed_chunks import embed_chunks_file
+    from app.utils.files import output_dir
+
+    chunk_files = sorted(output_dir("chunks").glob("*-chunks.jsonl"))
+    if not chunk_files:
+        raise RuntimeError("Cannot repair the vector index because no chunk files are available.")
+
+    print(f"Rebuilding Databricks-compatible embeddings for {len(chunk_files)} chunk files...")
+    for chunk_file in chunk_files:
+        _, embedded_path = embed_chunks_file(chunk_file)
+        print(f"  - embedded {chunk_file.name} -> {embedded_path.name}")
 
 
 def ensure_frontend() -> None:

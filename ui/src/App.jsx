@@ -1759,7 +1759,7 @@ export function App() {
         <div className="sidebar__top">
           <div className="sidebar-brand">
             <img src={logoUrl} alt="" />
-            <span>{APP_NAME}</span>
+            <span>{timeGreeting()}{firstNameFrom(me) ? `, ${firstNameFrom(me)}` : ''}</span>
           </div>
           <button className="new-chat" type="button" onClick={startNewChat}>
             <SquarePen size={17} />
@@ -1860,10 +1860,6 @@ export function App() {
           >
             <Menu size={20} />
           </button>
-          <div className="topbar__title">
-            <img src={logoUrl} alt="" />
-            <h1>{APP_NAME}</h1>
-          </div>
           <div className="topbar__actions">
             {messages.length ? (
               <button
@@ -1929,10 +1925,7 @@ export function App() {
                   <div className="empty-chat__mark">
                     <img src={logoUrl} alt="" />
                   </div>
-                  <h2>
-                    {timeGreeting()}
-                    {firstNameFrom(me) ? `, ${firstNameFrom(me)}` : ''}
-                  </h2>
+                  <h1>{APP_NAME}</h1>
                   <p>Ask anything about your indexed documents and videos.</p>
                   <SuggestedQuestions examples={starterExamples} disabled={isSending} onSelect={submitQuestion} />
                 </div>

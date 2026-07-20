@@ -125,6 +125,18 @@ def _email_set(env_name: str, default: set[str]) -> set[str]:
     return {item.strip().lower() for item in raw_value.split(",") if item.strip()}
 
 
+def local_dev_email() -> str:
+    """Optional override for the local-dev user's email (empty if unset)."""
+    load_dotenv_file()
+    return (env_value("LOCAL_DEV_EMAIL") or "").strip().lower()
+
+
+def local_dev_name() -> str:
+    """Optional override for the local-dev user's display name (empty if unset)."""
+    load_dotenv_file()
+    return (env_value("LOCAL_DEV_NAME") or "").strip()
+
+
 def app_api_keys() -> dict[str, dict[str, Any]]:
     load_dotenv_file()
     raw_value = env_value("APP_API_KEYS")
@@ -226,3 +238,14 @@ def answer_confidence_threshold() -> float:
         return max(0.0, min(1.0, float(raw_value)))
     except ValueError:
         return 0.8
+
+
+def grounded_answer_confidence_threshold() -> float:
+    load_dotenv_file()
+    raw_value = env_value("GROUNDED_ANSWER_CONFIDENCE_THRESHOLD")
+    if not raw_value:
+        return 0.65
+    try:
+        return max(0.0, min(1.0, float(raw_value)))
+    except ValueError:
+        return 0.65

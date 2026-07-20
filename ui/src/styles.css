@@ -367,7 +367,7 @@ select:focus-visible {
 
 .topbar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
   gap: 12px;
   min-height: 60px;
@@ -1109,7 +1109,7 @@ select {
   object-fit: contain;
 }
 
-.empty-chat h2 {
+.empty-chat h1 {
   margin: 0;
   font-size: 28px;
   font-weight: 720;
@@ -1410,7 +1410,7 @@ textarea:disabled {
     grid-template-columns: 1fr;
   }
 
-  .empty-chat h2 {
+  .empty-chat h1 {
     font-size: 26px;
   }
 }

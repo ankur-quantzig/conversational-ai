@@ -15,12 +15,13 @@ from threading import RLock
 from typing import Any, Callable
 
 from app.rag.answer import INSUFFICIENT_EVIDENCE_MESSAGE, RagAnswer, answer_question_structured
+from app.clients.lancedb_store import vector_index_status
 from app.rag.retriever import lancedb_retrieve
 from app.config import (
-    answer_confidence_threshold,
     context_max_chunks,
     context_token_budget,
     databricks_embedding_endpoint,
+    grounded_answer_confidence_threshold,
     llm_provider,
     retrieval_candidate_k,
 )
@@ -458,7 +459,9 @@ def structured_answer_is_usable(answer: RagAnswer) -> bool:
         return False
     if answer.missing_information.strip():
         return False
-    return answer.confidence_score >= answer_confidence_threshold()
+    if not answer.citations:
+        return False
+    return answer.confidence_score >= grounded_answer_confidence_threshold()
 
 
 def answer_with_main_pipeline(
@@ -658,7 +661,13 @@ def retrieve_hybrid_sources(
         {"questions": sub_questions[: GENERATED_SIMILAR_QUERY_COUNT + 1]},
     )
     ranked: dict[str, tuple[float, dict[str, Any]]] = {}
-    semantic_search_available = True
+    index_status = vector_index_status(load_chunks())
+    semantic_search_available = bool(index_status["consistent"])
+    if not semantic_search_available:
+        logger.warning(
+            "Semantic retrieval disabled because vector coverage is incomplete: %s",
+            index_status,
+        )
 
     for query_index, sub_question in enumerate(sub_questions):
         query_weight = 1.0 if query_index == 0 else 0.85

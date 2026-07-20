@@ -10,7 +10,7 @@ clients receive only these stable, user-facing phases:
 3. Finding the most relevant information
 4. Reviewing the best supporting information
 5. Preparing a clear answer
-6. Adding helpful next questions
+6. Finishing your response
 7. Your answer is ready
 
 Do not expose implementation terms in SSE messages. `public_progress_payload()` in

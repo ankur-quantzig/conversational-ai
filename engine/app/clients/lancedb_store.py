@@ -11,6 +11,36 @@ from app.utils.files import output_dir
 
 DEFAULT_TABLE_NAME = "rag_chunks"
 DB_DIR = output_dir("vector_db", "lancedb")
+MIN_INDEX_COVERAGE = 0.8
+
+
+def index_coverage_status(
+    chunk_count: int,
+    indexed_count: int,
+    minimum_coverage: float = MIN_INDEX_COVERAGE,
+) -> dict[str, Any]:
+    coverage = 1.0 if chunk_count == 0 else indexed_count / chunk_count
+    return {
+        "chunks": max(0, int(chunk_count)),
+        "indexed_rows": max(0, int(indexed_count)),
+        "coverage": round(max(0.0, min(1.0, coverage)), 4),
+        "minimum_coverage": minimum_coverage,
+        "consistent": chunk_count > 0 and indexed_count >= chunk_count * minimum_coverage,
+    }
+
+
+def vector_index_status(chunks: list[dict[str, Any]]) -> dict[str, Any]:
+    unique_chunk_ids = {str(chunk.get("id") or "") for chunk in chunks}
+    unique_chunk_ids.discard("")
+    try:
+        indexed_count = open_table(DEFAULT_TABLE_NAME).count_rows()
+        status = index_coverage_status(len(unique_chunk_ids), indexed_count)
+        status["error"] = ""
+        return status
+    except Exception as exc:
+        status = index_coverage_status(len(unique_chunk_ids), 0)
+        status["error"] = f"{type(exc).__name__}: {exc}"
+        return status
 
 
 def connect(db_dir: Path | None = None):
