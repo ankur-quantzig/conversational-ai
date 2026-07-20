@@ -17,7 +17,36 @@ def main() -> None:
     parser.add_argument("input", type=Path, help="Video file or directory of videos.")
     parser.add_argument("--frame-interval-seconds", type=float, default=5.0)
     parser.add_argument("--chunk-window-seconds", type=float, default=30.0)
-    parser.add_argument("--skip-vision", action="store_true", help="Skip OpenAI frame visual summaries.")
+    parser.add_argument("--skip-transcription", action="store_true", help="Skip audio transcription.")
+    parser.add_argument(
+        "--transcription-provider",
+        default="auto",
+        choices=["auto", "openai", "databricks", "none"],
+        help="Audio transcription provider. In auto mode, Databricks LLM_PROVIDER uses Databricks audio.",
+    )
+    parser.add_argument("--audio-segment-seconds", type=float, default=600.0, help="Chunk audio before Databricks transcription.")
+    parser.add_argument("--transcription-max-tokens", type=int, default=4096, help="Max output tokens per audio transcription segment.")
+    parser.add_argument("--skip-vision", action="store_true", help="Skip frame visual summaries.")
+    parser.add_argument(
+        "--vision-provider",
+        default="auto",
+        choices=["auto", "openai", "databricks", "none"],
+        help="Frame vision provider. In auto mode, Databricks LLM_PROVIDER uses Databricks vision.",
+    )
+    parser.add_argument("--vision-model", default="", help="Optional frame vision model or Databricks endpoint name.")
+    parser.add_argument(
+        "--quality-provider",
+        default="auto",
+        choices=["auto", "databricks", "openai", "heuristic", "none"],
+        help="Provider for retrieval-quality text cleanup before embeddings.",
+    )
+    parser.add_argument("--quality-model", default="", help="Optional quality cleanup model or Databricks endpoint name.")
+    parser.add_argument("--quality-required", action="store_true", help="Fail if LLM quality cleanup fails.")
+    parser.add_argument("--skip-quality-enrichment", action="store_true", help="Use deterministic quality scoring only.")
+    parser.add_argument("--quality-glossary-path", default="", help="Optional JSON glossary file with terms and definitions.")
+    parser.add_argument("--quality-min-llm-chars", type=int, default=80)
+    parser.add_argument("--quality-max-input-chars", type=int, default=6500)
+    parser.add_argument("--quality-max-output-tokens", type=int, default=1800)
     parser.add_argument("--embed", action="store_true", help="Embed the generated chunks.")
     parser.add_argument("--rebuild-index", action="store_true", help="Rebuild LanceDB from all embedded files after embedding.")
     parser.add_argument("--parallel-videos", type=int, default=1, help="Number of videos to process concurrently.")
@@ -71,7 +100,13 @@ def process_one_video(index: int, total: int, video_path: Path, args: argparse.N
         video_path=video_path,
         frame_interval_seconds=args.frame_interval_seconds,
         chunk_window_seconds=args.chunk_window_seconds,
+        skip_transcription=args.skip_transcription,
+        transcription_provider=args.transcription_provider,
+        audio_segment_seconds=args.audio_segment_seconds,
+        transcription_max_tokens=args.transcription_max_tokens,
         skip_vision=args.skip_vision,
+        vision_provider=args.vision_provider,
+        vision_model=args.vision_model or None,
         ocr_workers=max(1, args.ocr_workers),
         vision_workers=max(1, args.vision_workers),
         vision_timeout_seconds=max(0, args.vision_timeout_seconds),
@@ -83,8 +118,18 @@ def process_one_video(index: int, total: int, video_path: Path, args: argparse.N
         "chunks": len(chunks),
     }
     if args.embed:
+        from app.services.quality_enrichment import QualityEnrichmentConfig, enrich_chunks_file
+
+        print(f"[video] Enriching chunk quality for {video_path.name}", flush=True)
+        quality_config = QualityEnrichmentConfig.from_args(args)
+        enriched_chunks, quality_path, quality_summary_path, quality_summary = enrich_chunks_file(chunk_path, config=quality_config)
         print(f"[video] Embedding chunks for {video_path.name}", flush=True)
-        _, embedded_path = embed_chunks_file(chunk_path)
+        _, embedded_path = embed_chunks_file(quality_path)
+        item["raw_chunk_path"] = str(chunk_path)
+        item["chunk_path"] = str(quality_path)
+        item["quality_summary_path"] = str(quality_summary_path)
+        item["quality"] = quality_summary
+        item["chunks"] = len(enriched_chunks)
         item["embedded_path"] = str(embedded_path)
     return item
 

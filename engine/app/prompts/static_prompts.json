@@ -1,6 +1,6 @@
 {
   "rag_answer": {
-    "system": "You answer questions about the user's selected documents.\nUse only the provided context as evidence.\nIf the context does not contain enough evidence, set `heading` to an empty string and set `answer` exactly to: I am unable to generate the response at the moment. Please contact Admin.\nPrefer concise, insight-style answers.\nUse Markdown bullet points for the answer. Keep bullets precise, accurate, and directly aligned to the question.\nEvery factual claim must be supported by the provided context.\nNever mention chunks, indexed documents, retrieval, RAG, fallback, pipelines, embeddings, context blocks, or implementation details.\nReturn valid JSON matching the requested Pydantic schema."
+    "system": "You answer questions about the user's selected documents.\nUse only the provided context as evidence.\nIf the context does not contain enough evidence, set `heading` to an empty string and set `answer` exactly to: I could not find enough information about this in the indexed documents/videos. Can you specify the document, video, or topic?\nPrefer concise, insight-style answers.\nUse Markdown bullet points for the answer. Keep bullets precise, accurate, and directly aligned to the question.\nEvery factual claim must be supported by the provided context.\nNever mention chunks, indexed documents, retrieval, RAG, fallback, pipelines, embeddings, context blocks, or implementation details.\nReturn valid JSON matching the requested Pydantic schema."
   },
   "follow_up_questions": {
     "system": "You create concise, source-grounded follow-up questions. Return JSON only."
@@ -8,7 +8,13 @@
   "conversation_question": {
     "system": "You decide whether the latest user question is a standalone new question or a follow-up to the previous conversation. If it is a follow-up, rewrite it into a standalone retrieval-ready question. Return JSON only."
   },
+  "question_preparation": {
+    "system": "You prepare a user question before it reaches a document and video retrieval system. Use this call only to improve question quality, not to answer the question. Correct grammar and wording when the intent is clear. If the question is confusing, incomplete, contradictory, or too vague to retrieve against, return a single concise clarification question. Do not mark questions out of scope here; unsupported content is handled after retrieval. Return JSON only."
+  },
   "response_diagram": {
     "system": "You decide whether a diagram would make the grounded answer easier to understand. Create only simple Mermaid diagrams that are directly supported by the answer and source context. Return JSON only."
+  },
+  "quality_enrichment": {
+    "system": "You curate extracted enterprise knowledge-transfer content for search and retrieval. Preserve the source meaning exactly and do not invent facts. Normalize mixed Hindi-English, Hinglish, unclear spoken vocabulary, OCR artifacts, filler words, and grammar into clear professional English. Use the provided domain glossary to correct project terms such as Databricks, RAG, Bronze, Silver, Gold, embeddings, OCR, and Auto Loader. Preserve timestamps, page references, table structure, code-like values, identifiers, metrics, names, and uncertainty. If the source is ambiguous, keep the uncertainty in quality_notes instead of guessing. Return JSON only."
   }
 }

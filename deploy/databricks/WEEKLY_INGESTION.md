@@ -1,18 +1,22 @@
 # Weekly Databricks Volume Ingestion
 
-This pipeline scans a Databricks Volume for new or updated files, processes only changed files, and writes retrieval artifacts to a shared output Volume. The deployed Databricks App should read the same output Volume through `DATABRICKS_OUTPUT_VOLUME`.
+This pipeline scans a Databricks Volume for new or updated files, processes only changed files, writes retrieval artifacts to a shared output Volume, and appends Bronze/Silver/Gold Delta tables in Unity Catalog. The deployed Databricks App should read the same output Volume through `DATABRICKS_OUTPUT_VOLUME`.
 
 ## What It Does
 
 ```text
 Databricks Volume input
   -> incremental manifest check
-  -> PDF OCR/layout/vision extraction
-  -> video audio transcription + frame OCR + frame vision extraction
-  -> plain text ingestion
+  -> Bronze raw file audit table
+  -> PDF OCR/layout + optional Databricks page vision
+  -> video audio transcription + frame OCR + optional Databricks frame vision
+  -> plain text and DOCX ingestion
   -> optional Office conversion to PDF when LibreOffice is available
-  -> chunks
+  -> raw retrieval chunks
+  -> quality enrichment, glossary cleanup, language normalization, and scoring
+  -> Silver curated content table
   -> Databricks embedding endpoint
+  -> Gold embedded chunks table
   -> embedded JSONL
   -> LanceDB rag_chunks index
   -> shared output Volume
@@ -37,14 +41,22 @@ DATABRICKS_HOST=https://dbc-4d180757-761e.cloud.databricks.com
 DATABRICKS_TOKEN=<secret>
 DATABRICKS_CHAT_ENDPOINT=databricks-claude-sonnet-4
 DATABRICKS_EMBEDDING_ENDPOINT=databricks-bge-large-en
+DATABRICKS_TRANSCRIPTION_ENDPOINT=databricks-gemini-3-5-flash
+DATABRICKS_VISION_ENDPOINT=databricks-gemini-3-5-flash
+VIDEO_TRANSCRIPTION_PROVIDER=databricks
+VIDEO_VISION_PROVIDER=databricks
+QUALITY_ENRICHMENT_PROVIDER=databricks
+QUALITY_ENRICHMENT_MODEL=databricks-claude-sonnet-4
+QUALITY_ENRICHMENT_REQUIRED=true
 DATABRICKS_DATA_VOLUME=/Volumes/<catalog>/<schema>/<input_volume>
 DATABRICKS_OUTPUT_VOLUME=/Volumes/<catalog>/<schema>/<output_volume>/insight-copilot-output
 AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=<secret or env>
 AZURE_DOCUMENT_INTELLIGENCE_KEY=<secret>
-OPENAI_API_KEY=<required by current PDF/video vision and Whisper transcription paths>
 ```
 
 The app must also have `DATABRICKS_OUTPUT_VOLUME` set, otherwise it will read the packaged demo `output/` folder instead of the weekly pipeline output.
+
+The scheduled job uses `--databricks-models-only`, which forces `LLM_PROVIDER=databricks`, uses the Databricks embedding endpoint for chunks, uses the Databricks Gemini endpoint for spoken video audio and visual extraction, uses the Databricks chat endpoint for quality enrichment, and removes OpenAI credentials from the ingestion runtime. In this mode `OPENAI_API_KEY` is not required or used.
 
 For this workspace, the discovered managed Volume is:
 
@@ -55,10 +67,12 @@ DATABRICKS_OUTPUT_VOLUME=/Volumes/insight-copilot/bronze/shell-bronze-insight-co
 
 ## Supported Inputs
 
-- PDFs: full OCR/layout + page vision extraction.
-- Videos: audio extraction, transcription, frame OCR, optional frame vision, timestamped chunks.
+- PDFs: Azure Document Intelligence OCR/layout extraction plus optional Databricks page vision through `DATABRICKS_VISION_ENDPOINT`, followed by glossary-aware quality cleanup before embeddings.
+- Videos: spoken audio transcription through `DATABRICKS_TRANSCRIPTION_ENDPOINT`, frame OCR, optional Databricks frame vision, timestamped chunks, and Hindi-English/Hinglish normalization before embeddings.
 - Text-like docs: `.txt`, `.md`, `.csv`, `.json`, `.jsonl`, `.html`, `.log`.
 - Office docs: `.docx`, `.pptx`, `.xlsx`, legacy Office files if `libreoffice` or `soffice` exists on the job cluster.
+
+Quality enrichment preserves the original extracted text in chunk metadata as `raw_content`, writes normalized retrieval text to `content`, and attaches quality fields such as detected language, quality score, corrections, review flag, provider, and model.
 
 Video processing uses system `ffmpeg` when present and falls back to the `imageio-ffmpeg` Python package on Databricks serverless. `ffprobe` is optional because the pipeline can parse basic metadata through `ffmpeg`. Office conversion requires LibreOffice.
 
@@ -88,8 +102,53 @@ Then run:
 python /Workspace/Shared/insight-copilot/engine/app/pipelines/databricks_volume_ingest.py \
   --input-volume /Volumes/<catalog>/<schema>/<input_volume> \
   --output-root /Volumes/<catalog>/<schema>/<output_volume>/insight-copilot-output \
+  --databricks-models-only \
   --dry-run
 ```
+
+## Databricks Health Checks
+
+Run diagnostics to confirm the job identity can see the Volume, Databricks serving auth, Azure OCR config, and Databricks model mode:
+
+```powershell
+databricks jobs submit --json "@deploy/databricks/jobs/volume_ingestion_diagnostics_submit.json" --profile dbc-insight-copilot-deployer
+```
+
+Expected diagnostic signals:
+
+```text
+llm_provider: databricks
+databricks_models_only: true
+databricks_embedding_endpoint: databricks-bge-large-en
+databricks_transcription_endpoint: databricks-gemini-3-5-flash
+databricks_vision_endpoint: databricks-gemini-3-5-flash
+video_transcription_provider: databricks
+video_vision_provider: databricks
+quality_provider: databricks
+quality_required: true
+DATABRICKS_RUNTIME_AUTH: true
+OPENAI_API_KEY: false
+```
+
+Run the smoke test to process one tiny file, call the Databricks embedding endpoint, and rebuild LanceDB:
+
+```powershell
+databricks jobs submit --json "@deploy/databricks/jobs/volume_ingestion_smoke_submit.json" --profile dbc-insight-copilot-deployer
+```
+
+Expected smoke output includes `failed: []`, `active_embedding_model: databricks-bge-large-en`, and `target_vector_length: 1024`.
+
+## Medallion Tables
+
+With `--enable-medallion --medallion-required`, each successful run writes:
+
+```text
+`insight-copilot`.`bronze`.`insight_copilot_raw_files`
+`insight-copilot`.`silver`.`insight_copilot_extracted_content`
+`insight-copilot`.`gold`.`insight_copilot_rag_chunks`
+```
+
+Bronze stores one audit row per discovered file, including skipped/deferred/failed files. Silver stores normalized extracted text plus raw text and quality metadata. Gold stores the retrieval-ready chunks with embeddings, embedding metadata, quality score, and review flags.
 
 ## Create Or Update The Weekly Job
 

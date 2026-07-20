@@ -6,8 +6,14 @@ from pathlib import Path
 
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
-CHUNKS_DIR = WORKSPACE_ROOT / "output" / "chunks"
-SOURCE_VIDEOS_DIR = WORKSPACE_ROOT / "data" / "Videos"
+CHUNK_DIRS = (
+    WORKSPACE_ROOT / "deploy" / "databricks" / "artifacts" / "output" / "chunks",
+    WORKSPACE_ROOT / "output" / "chunks",
+)
+SOURCE_VIDEO_DIRS = (
+    WORKSPACE_ROOT / "data" / "new_data",
+    WORKSPACE_ROOT / "data" / "Videos",
+)
 CLIPS_DIR = WORKSPACE_ROOT / "deploy" / "databricks" / "artifacts" / "video_clips"
 
 
@@ -15,26 +21,46 @@ def slug(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in value.lower()).strip("-")
 
 
-def load_video_segments() -> dict[str, tuple[Path, list[tuple[float, float]]]]:
-    segments: dict[str, tuple[Path, list[tuple[float, float]]]] = {}
-    for chunk_file in sorted(CHUNKS_DIR.glob("*video-chunks.jsonl")):
-        for line in chunk_file.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            chunk = json.loads(line)
-            metadata = chunk.get("metadata") or {}
-            start = metadata.get("start_time")
-            end = metadata.get("end_time")
-            source_path = Path(chunk.get("source_path") or chunk.get("source_pdf") or "")
-            if start is None or end is None or not source_path:
-                continue
-            doc_id = chunk["doc_id"]
-            entry = segments.get(doc_id)
-            if not entry:
-                segments[doc_id] = (source_path, [(float(start), float(end))])
-            else:
-                entry[1].append((float(start), float(end)))
+def load_video_segments() -> dict[str, tuple[Path, set[tuple[float, float]]]]:
+    segments: dict[str, tuple[Path, set[tuple[float, float]]]] = {}
+    for chunks_dir in CHUNK_DIRS:
+        if not chunks_dir.exists():
+            continue
+        for chunk_file in sorted(chunks_dir.glob("*video-chunks.jsonl")):
+            load_video_segments_from_file(chunk_file, segments)
     return segments
+
+
+def load_video_segments_from_file(
+    chunk_file: Path,
+    segments: dict[str, tuple[Path, set[tuple[float, float]]]],
+) -> None:
+    for line in chunk_file.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        chunk = json.loads(line)
+        metadata = chunk.get("metadata") or {}
+        start = metadata.get("start_time")
+        end = metadata.get("end_time")
+        source_path = Path(chunk.get("source_path") or chunk.get("source_pdf") or "")
+        if start is None or end is None or not source_path:
+            continue
+        doc_id = chunk["doc_id"]
+        entry = segments.get(doc_id)
+        if not entry:
+            segments[doc_id] = (source_path, {(float(start), float(end))})
+        else:
+            entry[1].add((float(start), float(end)))
+
+
+def resolve_source_video(source_path: Path) -> Path:
+    if source_path.exists():
+        return source_path
+    for source_dir in SOURCE_VIDEO_DIRS:
+        candidate = source_dir / source_path.name
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(f"Missing source video: {source_path}")
 
 
 def transcode_clip(source_path: Path, output_path: Path, start: float, end: float) -> None:
@@ -84,11 +110,7 @@ def main() -> None:
         raise RuntimeError("No video chunks found")
 
     for doc_id, (source_path, ranges) in segments.items():
-        candidate_source = source_path
-        if not candidate_source.exists():
-            candidate_source = SOURCE_VIDEOS_DIR / source_path.name
-        if not candidate_source.exists():
-            raise FileNotFoundError(f"Missing source video for {doc_id}: {source_path}")
+        candidate_source = resolve_source_video(source_path)
 
         safe_doc_id = slug(doc_id)
         for start, end in sorted(set(ranges)):

@@ -59,13 +59,12 @@ def restore_artifacts() -> None:
     """
     Restore packaged Databricks artifacts if present.
 
-    Important:
-    Do NOT delete ROOT/output/embeddings here, because embedded JSONL files may
-    already be synced directly to ROOT/output/embeddings. Deleting them would
-    prevent LanceDB from being built.
+    Packaged artifacts are treated as the app runtime snapshot. When the app
+    uses ROOT/output, replace old retrieval artifacts so stale chunks and
+    embeddings do not leak into the deployed index.
     """
     configured_output = os.getenv("INSIGHT_OUTPUT_ROOT") or os.getenv("DATABRICKS_OUTPUT_VOLUME") or os.getenv("OUTPUT_ROOT")
-    if configured_output:
+    if configured_output and is_external_output_root(configured_output):
         print(f"Using external output root {configured_output}. Skipping packaged artifact restore.")
         return
 
@@ -78,6 +77,7 @@ def restore_artifacts() -> None:
 
     print(f"Restoring packaged artifacts from {source} to {target}...")
 
+    clean_packaged_artifact_targets(target)
     target.mkdir(parents=True, exist_ok=True)
 
     for item in source.rglob("*"):
@@ -91,6 +91,36 @@ def restore_artifacts() -> None:
             destination.write_bytes(item.read_bytes())
 
     print("Artifact restore completed.")
+
+
+def is_external_output_root(configured_output: str) -> bool:
+    configured_path = Path(configured_output).expanduser()
+    if not configured_path.is_absolute():
+        configured_path = ROOT / configured_path
+    try:
+        return configured_path.resolve() != (ROOT / "output").resolve()
+    except Exception:
+        return True
+
+
+def clean_packaged_artifact_targets(target: Path) -> None:
+    """
+    Keep chat history, but replace retrieval artifacts with the packaged set.
+    This prevents stale local chunks/embeddings from leaking into Databricks Apps.
+    """
+    for name in (
+        "chunks",
+        "embeddings",
+        "vector_db",
+        "document_intelligence",
+        "multimodal_analysis",
+        "videos",
+        "quality",
+    ):
+        path = target / name
+        if path.exists():
+            print(f"Replacing packaged artifact target: {path}")
+            shutil.rmtree(path)
 
 
 def clean_generated_output(target: Path) -> None:
@@ -178,7 +208,13 @@ def ensure_lancedb_index() -> None:
 
 def ensure_frontend() -> None:
     ui_root = ROOT / "ui"
-    if (ui_root / "dist" / "index.html").exists():
+    dist_dir = ui_root / "dist"
+    force_build = os.getenv("APP_ENV", "").lower() == "databricks" or os.getenv("FORCE_FRONTEND_BUILD") == "1"
+    if dist_dir.exists() and force_build:
+        print(f"Removing existing frontend build at {dist_dir} before rebuilding from source...")
+        shutil.rmtree(dist_dir)
+
+    if (dist_dir / "index.html").exists():
         print("Frontend build already exists.")
         return
 

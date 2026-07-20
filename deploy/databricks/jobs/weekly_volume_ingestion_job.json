@@ -5,6 +5,9 @@
     "owner": "engine",
     "purpose": "incremental-volume-ingestion"
   },
+  "run_as": {
+    "service_principal_name": "7344d97b-7dcf-48b5-9cd2-905310a5d29e"
+  },
   "schedule": {
     "quartz_cron_expression": "0 0 2 ? * SUN *",
     "timezone_id": "Asia/Kolkata",
@@ -14,23 +17,53 @@
   "tasks": [
     {
       "task_key": "incremental_volume_ingestion",
-      "description": "Scan Databricks Volume for new or updated documents/videos, extract OCR/audio/frames, chunk, embed, and rebuild LanceDB.",
+      "description": "Scan Databricks Volume for new or updated documents/videos, extract OCR/audio/frames, enrich quality, embed, and rebuild LanceDB.",
       "spark_python_task": {
         "python_file": "/Workspace/Shared/insight-copilot/engine/app/pipelines/databricks_volume_ingest.py",
         "source": "WORKSPACE",
         "parameters": [
           "--input-volume",
-          "/Volumes/insight-copilot/bronze/shell-bronze-insight-copilot",
+          "/Volumes/insight-copilot/bronze/shell-bronze-insight-copilot/new_data",
           "--output-root",
           "/Volumes/insight-copilot/bronze/shell-bronze-insight-copilot/_insight_copilot_output",
           "--secret-scope",
           "insight-copilot",
+          "--databricks-models-only",
+          "--pdf-vision-provider",
+          "databricks",
+          "--frame-interval-seconds",
+          "30",
+          "--chunk-window-seconds",
+          "60",
+          "--video-transcription-provider",
+          "databricks",
+          "--audio-segment-seconds",
+          "600",
+          "--video-vision-provider",
+          "databricks",
+          "--video-vision-model",
+          "databricks-gemini-3-5-flash",
           "--ocr-workers",
           "2",
           "--vision-workers",
-          "2",
+          "1",
           "--vision-timeout-seconds",
-          "120"
+          "120",
+          "--quality-provider",
+          "databricks",
+          "--quality-model",
+          "databricks-claude-sonnet-4",
+          "--quality-required",
+          "--enable-medallion",
+          "--medallion-required",
+          "--medallion-catalog",
+          "insight-copilot",
+          "--medallion-bronze-schema",
+          "bronze",
+          "--medallion-silver-schema",
+          "silver",
+          "--medallion-gold-schema",
+          "gold"
         ]
       },
       "environment_key": "serverless_python",

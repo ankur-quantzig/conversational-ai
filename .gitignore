@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 app.yaml
+.databrickscfg
 
 # OS/editor noise
 .DS_Store

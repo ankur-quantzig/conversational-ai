@@ -38,13 +38,14 @@ const chunkFiles = import.meta.glob('../output/chunks/*-chunks.jsonl', {
 })
 
 const starterExamples = [
-  'What are AI agents and how do they work?',
-  'How do AI agents use tools and memory?',
-  'What is the difference between generative AI, AI agents, and agentic AI?',
-  'What are the key ideas across the indexed PDFs and videos?',
+  'What is the main objective of the Conversational AI POC?',
+  'Why do the videos need both transcription and frame-by-frame OCR?',
+  'How should the solution connect video content with related documents?',
+  'What Databricks architecture was proposed for SharePoint, Auto Loader, and the Bronze-Silver-Gold flow?',
 ]
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api'
+const APP_NAME = 'Shell Conversational AI'
 const MAX_QUESTION_LENGTH = 4000
 const MAX_TITLE_LENGTH = 200
 const UNABLE_TO_GENERATE_MESSAGE = 'I am unable to generate the response at the moment. Please contact Admin.'
@@ -121,7 +122,7 @@ function formatApiMessage(message) {
     sources: metadata.sources ?? [],
     citations: metadata.citations ?? [],
     followUpQuestions: metadata.follow_up_questions ?? [],
-    diagram: metadata.diagram ?? null,
+    diagram: null,
     questionAnalysis: metadata.question_analysis ?? null,
     elapsedMs: metadata.elapsed_ms ?? null,
     status: message.role === 'assistant' ? 'final_response' : undefined,
@@ -180,7 +181,7 @@ function sourceName(source = {}) {
 }
 
 function citationLocations(source, citation, index) {
-  const isVideo = source.source_type === 'video'
+  const isVideo = isVideoSource(source)
   const timeLabel =
     source.start_time_label && source.end_time_label
       ? `${source.start_time_label} - ${source.end_time_label}`
@@ -191,37 +192,64 @@ function citationLocations(source, citation, index) {
   return [`source ${index + 1}`]
 }
 
+function isVideoSource(source = {}) {
+  return String(source.source_type ?? source.metadata?.source_type ?? '').toLowerCase() === 'video'
+}
+
 function numericTime(value) {
   const number = Number(value)
-  return Number.isFinite(number) ? number : null
+  return Number.isFinite(number) && number >= 0 ? number : null
 }
 
 function VideoClipPlayer({ source }) {
   const videoRef = useRef(null)
-  if (source.source_type !== 'video' || !source.doc_id) return null
-
+  const [hasPlaybackError, setHasPlaybackError] = useState(false)
+  const [playbackMode, setPlaybackMode] = useState('clip')
+  const isVideo = isVideoSource(source)
+  const encodedDocId = source.doc_id ? encodeURIComponent(source.doc_id) : ''
   const start = numericTime(source.start_time ?? source.metadata?.start_time) ?? 0
   const end = numericTime(source.end_time ?? source.metadata?.end_time)
+  const hasEnd = end !== null && end > start
   const startLabel = source.start_time_label ?? source.metadata?.start_time_label ?? formatVideoTime(start)
-  const endLabel = source.end_time_label ?? source.metadata?.end_time_label ?? (end !== null ? formatVideoTime(end) : '')
+  const endLabel = source.end_time_label ?? source.metadata?.end_time_label ?? (hasEnd ? formatVideoTime(end) : '')
   const clipLabel = endLabel ? `${startLabel} - ${endLabel}` : `From ${startLabel}`
-  const encodedDocId = encodeURIComponent(source.doc_id)
-  const videoUrl =
-    end !== null
+  const timeFragment = `#t=${start}${hasEnd ? `,${end}` : ''}`
+  const clipUrl =
+    encodedDocId && hasEnd
       ? `${API_BASE_URL}/media/video-clips/${encodedDocId}?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`
-      : `${API_BASE_URL}/media/videos/${encodedDocId}#t=${start}`
+      : ''
+  const fullVideoUrl = encodedDocId ? `${API_BASE_URL}/media/videos/${encodedDocId}${timeFragment}` : ''
+  const videoUrl = playbackMode === 'clip' && clipUrl ? clipUrl : fullVideoUrl
+
+  useEffect(() => {
+    setPlaybackMode(clipUrl ? 'clip' : 'full')
+    setHasPlaybackError(false)
+  }, [clipUrl, fullVideoUrl])
+
+  if (!isVideo || !source.doc_id) return null
 
   function handleLoadedMetadata(event) {
-    if (end === null) {
+    if (playbackMode !== 'full') return
+    if (start > 0 && Math.abs(event.currentTarget.currentTime - start) > 1) {
       event.currentTarget.currentTime = start
     }
   }
 
   function handleTimeUpdate(event) {
-    if (end === null) return
+    if (playbackMode !== 'full') return
+    if (!hasEnd) return
     if (event.currentTarget.currentTime >= end) {
       event.currentTarget.pause()
     }
+  }
+
+  function handlePlaybackError() {
+    if (playbackMode === 'clip' && fullVideoUrl) {
+      setPlaybackMode('full')
+      setHasPlaybackError(false)
+      return
+    }
+    setHasPlaybackError(true)
   }
 
   return (
@@ -231,13 +259,20 @@ function VideoClipPlayer({ source }) {
         <strong>{clipLabel}</strong>
       </div>
       <video
+        key={videoUrl}
         ref={videoRef}
         controls
         preload="metadata"
         src={videoUrl}
         onLoadedMetadata={handleLoadedMetadata}
         onTimeUpdate={handleTimeUpdate}
+        onError={handlePlaybackError}
       />
+      {hasPlaybackError ? (
+        <div className="video-clip__error" role="status">
+          Video source is not available for playback yet.
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -256,13 +291,6 @@ function sessionBucket(session) {
   weekAgo.setDate(weekAgo.getDate() - 7)
   if (date >= weekAgo) return 'Previous 7 days'
   return 'Older'
-}
-
-function timeGreeting() {
-  const hour = new Date().getHours()
-  if (hour < 12) return 'Good morning'
-  if (hour < 17) return 'Good afternoon'
-  return 'Good evening'
 }
 
 function relativeTime(value) {
@@ -295,12 +323,12 @@ function formatVideoTime(seconds) {
 
 function sourceDisplayContent(source = {}) {
   const content = String(source.content || '').trim()
-  if (source.source_type === 'video') return ''
+  if (isVideoSource(source)) return ''
   return content
 }
 
 function sourceTypeLabel(source = {}) {
-  return source.source_type === 'video' ? 'Video' : 'PDF/Text'
+  return isVideoSource(source) ? 'Video' : 'PDF/Text'
 }
 
 function CitationList({ items, openSource, onToggle }) {
@@ -350,7 +378,7 @@ function CitationList({ items, openSource, onToggle }) {
 function SourceChunk({ source, citation, index, onClose }) {
   const pages = source.page_numbers?.length ? source.page_numbers : citation?.pages
   const pageLabel =
-    source.source_type === 'video'
+    isVideoSource(source)
       ? citationLocations(source, citation, index).join(', ')
       : pages?.length
         ? `Page ${pages.join(', ')}`
@@ -372,9 +400,9 @@ function SourceChunk({ source, citation, index, onClose }) {
         </div>
       </div>
       <h3>{documentName}</h3>
-      {source.source_type !== 'video' && source.section ? <h4>{source.section}</h4> : null}
+      {!isVideoSource(source) && source.section ? <h4>{source.section}</h4> : null}
       <VideoClipPlayer source={source} />
-      {source.source_type !== 'video' && citation?.quote ? <blockquote>{citation.quote}</blockquote> : null}
+      {!isVideoSource(source) && citation?.quote ? <blockquote>{citation.quote}</blockquote> : null}
       {displayContent ? (
         <p>{displayContent}</p>
       ) : null}
@@ -727,6 +755,7 @@ function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry
     checking_access: 'Checking',
     guardrail_check: 'Checking',
     question_analysis: 'Context',
+    question_rephrasing: 'Rephrasing',
     question_ready: 'Context',
     creating_subquestions: 'Planning',
     subquestions_ready: 'Planning',
@@ -737,7 +766,6 @@ function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry
     reranking_chunks: 'Reranking',
     generating_answer: 'Generating',
     creating_followups: 'Follow-ups',
-    diagram_check: 'Diagram',
     saving_conversation: 'Saving',
     complete: 'Complete',
     writing: 'Writing',
@@ -835,7 +863,6 @@ function ChatMessage({ message, onCopy, onFeedback, onShare, onDownload, onRetry
                 <span />
               </div>
             ) : null}
-            {!isUser && message.diagram?.should_show ? <ResponseDiagram diagram={message.diagram} /> : null}
             {activeCitation ? (
               <SourceChunk
                 source={activeCitation.source}
@@ -1381,7 +1408,7 @@ export function App() {
       sources: data.sources ?? [],
       citations: data.citations ?? [],
       followUpQuestions: data.follow_up_questions ?? [],
-      diagram: data.diagram ?? null,
+      diagram: null,
       questionAnalysis: data.question_analysis ?? null,
       elapsedMs,
       status: 'final_response',
@@ -1445,7 +1472,7 @@ export function App() {
           sources: data.sources ?? [],
           citations: data.citations ?? [],
           followUpQuestions: data.follow_up_questions ?? [],
-          diagram: data.diagram ?? null,
+          diagram: null,
           questionAnalysis: data.question_analysis ?? null,
           elapsedMs,
           status: 'final_response',
@@ -1734,7 +1761,7 @@ export function App() {
         <div className="sidebar__top">
           <div className="sidebar-brand">
             <img src={logoUrl} alt="" />
-            <span>Insight Copilot</span>
+            <span>{APP_NAME}</span>
           </div>
           <button className="new-chat" type="button" onClick={startNewChat}>
             <SquarePen size={17} />
@@ -1851,8 +1878,7 @@ export function App() {
           </button>
           <div className="topbar__title">
             <img src={logoUrl} alt="" />
-            <h1>Insight Copilot</h1>
-            {activeDocument ? <span>{activeDocument.title}</span> : null}
+            <h1>{APP_NAME}</h1>
           </div>
           <div className="topbar__actions">
             {messages.length ? (

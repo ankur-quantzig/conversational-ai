@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
 
-from app.config import databricks_chat_endpoint, databricks_host, databricks_token
+from app.config import databricks_chat_endpoint, databricks_host, databricks_token, databricks_transcription_endpoint, databricks_vision_endpoint
 
 
 def runtime_host_token() -> tuple[str, str]:
@@ -44,71 +47,154 @@ def serving_auth() -> tuple[str, str]:
     return host or runtime_host, token or runtime_token
 
 
+def invoke_endpoint(endpoint_name: str, payload: dict[str, Any], timeout: int = 120) -> dict[str, Any]:
+    host, token = serving_auth()
+    if not host:
+        raise RuntimeError("DATABRICKS_HOST is required for Databricks model serving")
+    if not token:
+        raise RuntimeError("DATABRICKS_TOKEN is required for Databricks model serving")
+
+    url = f"{host}/serving-endpoints/{endpoint_name}/invocations"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"Databricks endpoint `{endpoint_name}` failed with HTTP {exc.code}: {detail[:500]}") from exc
+
+
+def invoke_chat_completions(payload: dict[str, Any], timeout: int = 120) -> dict[str, Any]:
+    host, token = serving_auth()
+    if not host:
+        raise RuntimeError("DATABRICKS_HOST is required for Databricks model serving")
+    if not token:
+        raise RuntimeError("DATABRICKS_TOKEN is required for Databricks model serving")
+
+    url = f"{host}/ai-gateway/mlflow/v1/chat/completions"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"Databricks chat completions failed with HTTP {exc.code}: {detail[:500]}") from exc
+
+
 def chat_completion(
     messages: list[dict[str, str]],
     endpoint: str | None = None,
     temperature: float = 0.0,
     max_tokens: int = 1200,
 ) -> str:
-    host, token = serving_auth()
     endpoint_name = endpoint or databricks_chat_endpoint()
-    if not host:
-        raise RuntimeError("DATABRICKS_HOST is required for Databricks model serving")
-    if not token:
-        raise RuntimeError("DATABRICKS_TOKEN is required for Databricks model serving")
-
-    url = f"{host}/serving-endpoints/{endpoint_name}/invocations"
     payload = {
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=120) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"Databricks model serving failed with HTTP {exc.code}: {detail[:500]}") from exc
-
+    data = invoke_endpoint(endpoint_name, payload, timeout=120)
     return extract_message_content(data)
 
 
 def embeddings(texts: list[str], endpoint: str | None = None) -> list[list[float]]:
-    host, token = serving_auth()
     endpoint_name = endpoint or "databricks-bge-large-en"
-    if not host:
-        raise RuntimeError("DATABRICKS_HOST is required for Databricks model serving")
-    if not token:
-        raise RuntimeError("DATABRICKS_TOKEN is required for Databricks model serving")
-
-    url = f"{host}/serving-endpoints/{endpoint_name}/invocations"
     payload = {"input": texts}
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=120) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"Databricks embedding endpoint failed with HTTP {exc.code}: {detail[:500]}") from exc
-
+    data = invoke_endpoint(endpoint_name, payload, timeout=120)
     return extract_embeddings(data)
+
+
+def transcribe_audio(
+    audio_path: Path,
+    endpoint: str | None = None,
+    prompt: str | None = None,
+    max_tokens: int = 4096,
+    timeout: int = 300,
+) -> str:
+    endpoint_name = endpoint or databricks_transcription_endpoint()
+    mime_type = audio_mime_type(audio_path)
+    audio_b64 = base64.standard_b64encode(audio_path.read_bytes()).decode("utf-8")
+    transcription_prompt = prompt or (
+        "Transcribe the spoken audio exactly. Do not summarize, translate, add explanations, "
+        "or mention that you are an AI model. Return strict JSON with this shape: "
+        '{"text":"full transcript text"}.'
+    )
+    payload = {
+        "model": endpoint_name,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": transcription_prompt},
+                    {"type": "audio_url", "audio_url": {"url": f"data:{mime_type};base64,{audio_b64}"}},
+                ],
+            }
+        ],
+        "temperature": 0.0,
+        "max_tokens": max_tokens,
+    }
+    data = invoke_chat_completions(payload, timeout=timeout)
+    return extract_message_content(data)
+
+
+def analyze_image(
+    image_path: Path,
+    prompt: str,
+    endpoint: str | None = None,
+    max_tokens: int = 1400,
+    timeout: int = 180,
+) -> str:
+    endpoint_name = endpoint or databricks_vision_endpoint()
+    mime_type = image_mime_type(image_path)
+    image_b64 = base64.standard_b64encode(image_path.read_bytes()).decode("utf-8")
+    payload = {
+        "model": endpoint_name,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_b64}"}},
+                ],
+            }
+        ],
+        "temperature": 0.0,
+        "max_tokens": max_tokens,
+    }
+    data = invoke_chat_completions(payload, timeout=timeout)
+    return extract_message_content(data)
+
+
+def audio_mime_type(audio_path: Path) -> str:
+    if audio_path.suffix.lower() == ".mp3":
+        return "audio/mp3"
+    guessed, _ = mimetypes.guess_type(str(audio_path))
+    return guessed or "audio/mpeg"
+
+
+def image_mime_type(image_path: Path) -> str:
+    if image_path.suffix.lower() in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if image_path.suffix.lower() == ".png":
+        return "image/png"
+    guessed, _ = mimetypes.guess_type(str(image_path))
+    return guessed or "image/jpeg"
 
 
 def extract_embeddings(data: dict[str, Any]) -> list[list[float]]:

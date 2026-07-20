@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
 import subprocess
 import threading
@@ -33,16 +34,28 @@ from app.config import (
 )
 from app.clients.lancedb_store import DEFAULT_TABLE_NAME, open_table
 from app.db.postgres import get_connection, init_db, wait_for_database
-from app.rag.answer import generate_follow_up_questions, generate_response_diagram, plan_conversation_question
+from app.rag.answer import (
+    DEFAULT_CLARIFICATION_QUESTION,
+    QuestionPreparation,
+    generate_follow_up_questions,
+    plan_conversation_question,
+    prepare_retrieval_question,
+)
 from app.security.audit import log_audit_event
 from app.security.auth import UserContext, current_user, ensure_document_access, require_role
 from app.security.guardrails import QuerySecurityResult, classify_query
 from app.security.quota import enforce_question_quota, question_limit_for, questions_used
 from app.security.rate_limit import enforce_rate_limit
-from app.utils.files import project_root
+from app.utils.files import data_root, output_dir, project_root
 
 
 UNABLE_TO_GENERATE_MESSAGE = "I am unable to generate the response at the moment. Please contact Admin."
+VIDEO_MEDIA_TYPES = {
+    ".m4v": "video/mp4",
+    ".mov": "video/quicktime",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+}
 
 
 class ChatRequest(BaseModel):
@@ -153,12 +166,7 @@ def safe_follow_up_questions(question: str, answer: str, sources: list[dict[str,
 
 
 def safe_response_diagram(question: str, answer: str, sources: list[dict[str, Any]]) -> dict[str, Any]:
-    try:
-        diagram = generate_response_diagram(question=question, answer=answer, results=sources)
-        payload = diagram.model_dump()
-        return payload if payload.get("should_show") else {}
-    except Exception:
-        return {}
+    return {}
 
 
 def conversation_history(session_id: str | None, user: UserContext, limit: int = 8) -> list[dict[str, Any]]:
@@ -194,6 +202,107 @@ def analyze_question_for_turn(question: str, history: list[dict[str, Any]]) -> t
             "effective_question": question,
             "reason": f"Question classifier unavailable: {type(exc).__name__}",
         }
+
+
+def safe_prepare_retrieval_question(question: str) -> tuple[str, dict[str, Any]]:
+    cleaned_question = " ".join(question.strip().split())
+    try:
+        plan = prepare_retrieval_question(cleaned_question)
+    except Exception as exc:
+        plan = QuestionPreparation(
+            status="ready",
+            rephrased_question=cleaned_question,
+            clarification_question="",
+            issue="none",
+            confidence_score=0.0,
+            reason=f"Question preparation unavailable: {type(exc).__name__}",
+        )
+    payload = plan.model_dump()
+    return plan.rephrased_question, payload
+
+
+def prepare_question_for_answering(question: str, history: list[dict[str, Any]]) -> tuple[str, dict[str, Any]]:
+    standalone_question, question_analysis = analyze_question_for_turn(question, history)
+    retrieval_question, preparation = safe_prepare_retrieval_question(standalone_question)
+    question_analysis["question_preparation"] = preparation
+    question_analysis["standalone_question"] = standalone_question
+    question_analysis["effective_question"] = retrieval_question
+    return retrieval_question, question_analysis
+
+
+def question_needs_clarification(question_analysis: dict[str, Any]) -> bool:
+    preparation = question_analysis.get("question_preparation") or {}
+    return preparation.get("status") == "needs_clarification"
+
+
+def clarification_answer(question_analysis: dict[str, Any]) -> str:
+    preparation = question_analysis.get("question_preparation") or {}
+    answer = str(preparation.get("clarification_question") or "").strip()
+    return answer or DEFAULT_CLARIFICATION_QUESTION
+
+
+def build_clarification_chat_response(
+    *,
+    session_id: str,
+    title: str,
+    user: UserContext,
+    chat_request: ChatRequest,
+    question: str,
+    effective_top_k: int,
+    question_analysis: dict[str, Any],
+    security: QuerySecurityResult,
+    quota: dict[str, int | None],
+    started_at: float,
+    request_id: str,
+) -> ChatResponse:
+    answer = clarification_answer(question_analysis)
+    elapsed_ms = elapsed_ms_since(started_at)
+    assistant_message_id = persist_chat_turn(
+        session_id=session_id,
+        title=title,
+        user=user,
+        question=question,
+        answer=answer,
+        user_metadata={"doc_id": chat_request.doc_id, "source_type": chat_request.source_type, "top_k": effective_top_k},
+        assistant_metadata={
+            "sources": [],
+            "mode": "needs_clarification",
+            "confidence": "needs_clarification",
+            "confidence_score": 0.0,
+            "citations": [],
+            "follow_up_questions": [],
+            "diagram": {},
+            "question_analysis": question_analysis,
+            "heading": "",
+            "missing_information": "",
+            "security": {**security.model_dump(), "quota": quota},
+            "elapsed_ms": elapsed_ms,
+        },
+        existing_session=bool(chat_request.session_id),
+    )
+    log_audit_event(
+        "chat_needs_clarification",
+        user=user,
+        request_id=request_id,
+        metadata={"session_id": session_id, "message_id": assistant_message_id, "question_analysis": question_analysis},
+    )
+    return ChatResponse(
+        session_id=session_id,
+        message_id=assistant_message_id,
+        request_id=request_id,
+        heading="",
+        answer=answer,
+        sources=[],
+        mode="needs_clarification",
+        confidence="needs_clarification",
+        confidence_score=0.0,
+        citations=[],
+        follow_up_questions=[],
+        diagram={},
+        question_analysis=question_analysis,
+        security={**security.model_dump(), "quota": quota},
+        elapsed_ms=elapsed_ms,
+    )
 
 
 def answer_deltas(answer: str, chunk_size: int = 8):
@@ -501,7 +610,22 @@ def chat(chat_request: ChatRequest, request: Request, user: UserContext = Depend
         )
 
     history = conversation_history(chat_request.session_id, user)
-    effective_question, question_analysis = analyze_question_for_turn(question, history)
+    effective_question, question_analysis = prepare_question_for_answering(question, history)
+    if question_needs_clarification(question_analysis):
+        return build_clarification_chat_response(
+            session_id=session_id,
+            title=title,
+            user=user,
+            chat_request=chat_request,
+            question=question,
+            effective_top_k=effective_top_k,
+            question_analysis=question_analysis,
+            security=security,
+            quota=quota,
+            started_at=started_at,
+            request_id=request_id,
+        )
+
     rag_response = answer_question(
         question=effective_question,
         top_k=effective_top_k,
@@ -512,7 +636,7 @@ def chat(chat_request: ChatRequest, request: Request, user: UserContext = Depend
     sources = rag_response["sources"]
     heading = rag_response.get("heading", "")
     follow_up_questions = safe_follow_up_questions(question=effective_question, answer=answer, sources=sources)
-    diagram = safe_response_diagram(question=effective_question, answer=answer, sources=sources)
+    diagram = {}
     elapsed_ms = elapsed_ms_since(started_at)
 
     assistant_message_id = persist_chat_turn(
@@ -645,7 +769,12 @@ def chat_stream(chat_request: ChatRequest, request: Request, user: UserContext =
 
             yield sse_event("progress", {"stage": "question_analysis", "message": "Checking conversation context", "metadata": {}, "request_id": request_id})
             history = conversation_history(chat_request.session_id, user)
-            effective_question, question_analysis = analyze_question_for_turn(question, history)
+            standalone_question, question_analysis = analyze_question_for_turn(question, history)
+            yield sse_event("progress", {"stage": "question_rephrasing", "message": "Rephrasing question for retrieval", "metadata": {}, "request_id": request_id})
+            effective_question, preparation = safe_prepare_retrieval_question(standalone_question)
+            question_analysis["question_preparation"] = preparation
+            question_analysis["standalone_question"] = standalone_question
+            question_analysis["effective_question"] = effective_question
             yield sse_event(
                 "progress",
                 {
@@ -654,10 +783,33 @@ def chat_stream(chat_request: ChatRequest, request: Request, user: UserContext =
                     "metadata": {
                         "is_follow_up": question_analysis.get("is_follow_up"),
                         "effective_question": effective_question,
+                        "question_preparation": question_analysis.get("question_preparation", {}),
                     },
                     "request_id": request_id,
                 },
             )
+            if question_needs_clarification(question_analysis):
+                response = build_clarification_chat_response(
+                    session_id=session_id,
+                    title=title,
+                    user=user,
+                    chat_request=chat_request,
+                    question=question,
+                    effective_top_k=effective_top_k,
+                    question_analysis=question_analysis,
+                    security=security,
+                    quota=quota,
+                    started_at=started_at,
+                    request_id=request_id,
+                )
+                yield sse_event("status", {"stage": "writing", "message": "", "request_id": request_id})
+                for delta in answer_deltas(response.answer):
+                    yield sse_event("answer_delta", {"delta": delta, "request_id": request_id})
+                    time.sleep(0.025)
+                yield sse_event("progress", {"stage": "complete", "message": "Response ready", "metadata": {}, "request_id": request_id})
+                yield sse_event("status", {"stage": "final_response", "message": "Final response", "request_id": request_id})
+                yield sse_event("final", response.model_dump())
+                return
 
             source_type = None if chat_request.source_type in (None, "", "all") else chat_request.source_type
             rag_response = None
@@ -684,8 +836,7 @@ def chat_stream(chat_request: ChatRequest, request: Request, user: UserContext =
                 time.sleep(0.025)
             yield sse_event("progress", {"stage": "creating_followups", "message": "Creating follow-up questions", "metadata": {}, "request_id": request_id})
             follow_up_questions = safe_follow_up_questions(question=effective_question, answer=answer, sources=sources)
-            yield sse_event("progress", {"stage": "diagram_check", "message": "Checking if a diagram helps", "metadata": {}, "request_id": request_id})
-            diagram = safe_response_diagram(question=effective_question, answer=answer, sources=sources)
+            diagram = {}
             elapsed_ms = elapsed_ms_since(started_at)
 
             yield sse_event("progress", {"stage": "saving_conversation", "message": "Saving conversation", "metadata": {}, "request_id": request_id})
@@ -956,31 +1107,91 @@ def find_previous_user_question(session_id: str, before_created_at: Any) -> str:
     return row["content"]
 
 
-def indexed_video_path(doc_id: str) -> Path:
-    allowed_extensions = {".mp4", ".mov", ".m4v", ".webm"}
-    workspace_root = project_root()
-    allowed_roots = [
-        (workspace_root / "data").resolve(),
-        (workspace_root / "output").resolve(),
-        (workspace_root / "deploy" / "databricks" / "artifacts" / "video_sources").resolve(),
+def configured_video_roots() -> list[Path]:
+    roots = [
+        data_root(),
+        output_dir(),
+        project_root() / "data",
+        project_root() / "output",
+        project_root() / "deploy" / "databricks" / "artifacts" / "video_sources",
+        project_root() / "deploy" / "databricks" / "artifacts" / "output",
     ]
+    for env_name in ("DATABRICKS_DATA_VOLUME", "DATABRICKS_OUTPUT_VOLUME", "INSIGHT_DATA_ROOT", "INSIGHT_OUTPUT_ROOT", "DATA_ROOT", "OUTPUT_ROOT"):
+        value = os.getenv(env_name)
+        if value and "<" not in value:
+            roots.append(Path(value))
+
+    resolved_roots = []
+    seen = set()
+    for root in roots:
+        try:
+            resolved = root.expanduser().resolve()
+        except Exception:
+            continue
+        if "<" in str(resolved) or str(resolved) in seen:
+            continue
+        seen.add(str(resolved))
+        resolved_roots.append(resolved)
+    return resolved_roots
+
+
+def is_path_under_roots(path: Path, roots: list[Path]) -> bool:
+    try:
+        resolved = path.expanduser().resolve()
+    except Exception:
+        return False
+    return any(resolved == root or root in resolved.parents for root in roots)
+
+
+def candidate_video_paths(raw_path: str, allowed_roots: list[Path]) -> list[Path]:
+    source_path = Path(raw_path).expanduser()
+    candidates = [source_path]
+    if not source_path.is_absolute():
+        candidates.append(project_root() / source_path)
+        for root in allowed_roots:
+            candidates.append(root / source_path)
+
+    filename = source_path.name
+    for root in allowed_roots:
+        candidates.extend(
+            [
+                root / filename,
+                root / "new_data" / filename,
+                root / "uploads" / filename,
+                root / "videos" / filename,
+            ]
+        )
+
+    deduped = []
+    seen = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.expanduser().resolve()
+        except Exception:
+            continue
+        if str(resolved) in seen:
+            continue
+        seen.add(str(resolved))
+        deduped.append(resolved)
+    return deduped
+
+
+def indexed_video_path(doc_id: str) -> Path:
+    allowed_roots = configured_video_roots()
     for chunk in load_chunks():
         if chunk.get("doc_id") != doc_id:
             continue
-        source_type = chunk.get("source_type") or chunk.get("metadata", {}).get("source_type")
+        source_type = str(chunk.get("source_type") or chunk.get("metadata", {}).get("source_type") or "").lower()
         if source_type != "video":
             continue
         raw_path = chunk.get("source_path") or chunk.get("source_pdf") or chunk.get("metadata", {}).get("source_path")
         if not raw_path:
             continue
-        candidates = [Path(raw_path), workspace_root / raw_path]
-        candidates.extend(root / Path(raw_path).name for root in allowed_roots)
-        for candidate in candidates:
-            if not candidate.exists() or candidate.suffix.lower() not in allowed_extensions:
+        for candidate in candidate_video_paths(str(raw_path), allowed_roots):
+            if not candidate.exists() or candidate.suffix.lower() not in VIDEO_MEDIA_TYPES:
                 continue
-            resolved = candidate.resolve()
-            if any(resolved == root or root in resolved.parents for root in allowed_roots):
-                return resolved
+            if is_path_under_roots(candidate, allowed_roots):
+                return candidate
     raise HTTPException(status_code=404, detail="Video source not found")
 
 
@@ -988,7 +1199,7 @@ def indexed_video_path(doc_id: str) -> Path:
 def video_source(doc_id: str, user: UserContext = Depends(current_user)) -> FileResponse:
     ensure_document_access(user, doc_id)
     path = indexed_video_path(doc_id)
-    return FileResponse(path, media_type="video/mp4", filename=path.name)
+    return FileResponse(path, media_type=VIDEO_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream"), filename=path.name)
 
 
 def clip_cache_path(doc_id: str, start: float, end: float) -> Path:
@@ -1071,13 +1282,21 @@ def video_clip_source(
 
 
 class SinglePageApp(StaticFiles):
+    def is_not_modified(self, response_headers, request_headers) -> bool:
+        return False
+
     async def get_response(self, path: str, scope):
         try:
-            return await super().get_response(path, scope)
+            response = await super().get_response(path, scope)
         except StarletteHTTPException as exc:
             if exc.status_code == 404:
-                return await super().get_response("index.html", scope)
-            raise
+                response = await super().get_response("index.html", scope)
+            else:
+                raise
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
 
 
 dist_dir = project_root() / "ui" / "dist"

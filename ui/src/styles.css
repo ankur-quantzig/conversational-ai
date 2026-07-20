@@ -382,7 +382,7 @@ select:focus-visible {
 .topbar__title {
   display: grid;
   grid-template-columns: auto minmax(0, max-content);
-  gap: 2px 9px;
+  gap: 9px;
   align-items: center;
   justify-self: start;
   max-width: 100%;
@@ -392,7 +392,6 @@ select:focus-visible {
 .topbar__title img {
   width: 30px;
   height: 30px;
-  grid-row: 1 / span 2;
   object-fit: contain;
 }
 
@@ -400,6 +399,9 @@ select:focus-visible {
   margin: 0;
   font-size: 16px;
   font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .topbar__title span {
@@ -989,6 +991,16 @@ select {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #000;
+}
+
+.video-clip__error {
+  border: 1px solid #f0c9c9;
+  border-radius: 7px;
+  background: #fff6f6;
+  color: #8a1f1f;
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 8px 10px;
 }
 
 .source-chunk h3 {
@@ -1665,6 +1677,12 @@ textarea:disabled {
 [data-theme="dark"] .source-chunk blockquote,
 [data-theme="dark"] .source-chunk p {
   color: #b9c0ca;
+}
+
+[data-theme="dark"] .video-clip__error {
+  border-color: #7f1d1d;
+  background: #2a1416;
+  color: #fecaca;
 }
 
 [data-theme="dark"] .source-card__meta strong {
