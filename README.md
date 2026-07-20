@@ -231,3 +231,22 @@ GET    /sessions/{session_id}/messages
 POST   /chat
 DELETE /sessions/{session_id}
 ```
+
+## Retrieval evaluation
+
+The versioned seed set in `evaluation/golden_questions.v1.jsonl` covers PDF, video, and
+cross-source questions. Run the provider-independent BM25 baseline from the repo root:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\evaluate_retrieval.py `
+  --method bm25 `
+  --top-k 10 `
+  --output output\evaluation\retrieval-baseline.json
+```
+
+The report includes hit rate, mean reciprocal rank, per-case latency, and the ranked
+document IDs. Chat responses also include a `telemetry` object with pipeline provider,
+mode, cache/fallback flags, source count, total time, and per-stage timings.
+
+Production controls, load testing, alerts, and release gates are documented in
+[`docs/RAG_ENGINE_OPERATIONS.md`](docs/RAG_ENGINE_OPERATIONS.md).

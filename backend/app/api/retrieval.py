@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 import time
 from collections import Counter
@@ -15,7 +16,19 @@ from typing import Any, Callable
 
 from app.rag.answer import INSUFFICIENT_EVIDENCE_MESSAGE, RagAnswer, answer_question_structured
 from app.rag.retriever import lancedb_retrieve
-from app.config import answer_confidence_threshold, databricks_embedding_endpoint, llm_provider
+from app.config import (
+    answer_confidence_threshold,
+    context_max_chunks,
+    context_token_budget,
+    databricks_embedding_endpoint,
+    llm_provider,
+    retrieval_candidate_k,
+)
+from app.api.telemetry import PipelineTrace, record_pipeline_metric
+from app.rag.context import context_summary, expand_adjacent_sources, select_context_sources
+from app.rag.grounding import calibrate_answer
+from app.rag.usage import model_usage_snapshot, reset_model_usage
+from app.rag.reranker import model_rerank
 from app.utils.files import output_dir
 
 
@@ -24,8 +37,8 @@ logger = logging.getLogger(__name__)
 ProgressCallback = Callable[[str, str, dict[str, Any] | None], None]
 
 GENERATED_SIMILAR_QUERY_COUNT = 3
-CANDIDATE_CHUNKS_PER_QUERY = 10
-RERANKED_CHUNKS_FOR_LLM = 6
+CANDIDATE_CHUNKS_PER_QUERY = 12
+RRF_K = 60.0
 CACHE_TTL_SECONDS = 300
 TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9-]{2,}", re.IGNORECASE)
 STOP_TERMS = {
@@ -109,8 +122,44 @@ class TtlCache:
 _answer_cache = TtlCache()
 
 
-def cached_answer_key(question: str, top_k: int, doc_id: str | None, source_type: str | None) -> str:
+def knowledge_version() -> str:
+    paths = [
+        output_dir("chunks"),
+        output_dir("vector_db", "lancedb"),
+        Path(__file__).resolve().parents[3] / "engine" / "app" / "prompts",
+    ]
+    entries = []
+    for path in paths:
+        if path.is_dir():
+            file_versions = []
+            try:
+                for child in path.rglob("*"):
+                    if child.is_file():
+                        file_versions.append((str(child.relative_to(path)), child.stat().st_mtime_ns, child.stat().st_size))
+            except OSError:
+                file_versions = []
+            entries.append((str(path), file_versions))
+        else:
+            try:
+                stat = path.stat()
+                entries.append((str(path), stat.st_mtime_ns, stat.st_size))
+            except OSError:
+                entries.append((str(path), 0, 0))
+    payload = json.dumps(entries, sort_keys=True)
+    return sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def cached_answer_key(
+    question: str,
+    top_k: int,
+    doc_id: str | None,
+    source_type: str | None,
+    cache_namespace: str = "shared",
+) -> str:
     payload = {
+        "schema_version": "2",
+        "cache_version": os.getenv("RAG_CACHE_VERSION") or knowledge_version(),
+        "namespace": cache_namespace,
         "provider": llm_provider(),
         "embedding_endpoint": databricks_embedding_endpoint(),
         "question": question,
@@ -419,24 +468,13 @@ def answer_with_main_pipeline(
     source_type: str | None = None,
     progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
-    emit_progress(progress, "embedding_query", "Embedding the question for vector search")
-    search_k = top_k if not (doc_id or source_type) else max(top_k * 8, 24)
-    results = lancedb_retrieve(question, top_k=search_k)
-    emit_progress(progress, "retrieving_chunks", "Retrieving candidate chunks", {"candidates": len(results)})
-    if source_type:
-        results = [result for result in results if (result.get("source_type") or "document") == source_type]
-    if doc_id:
-        results = [result for result in results if result.get("doc_id") == doc_id]
-    results = results[:top_k]
-    if not results:
-        raise RuntimeError("No LanceDB results matched the selected source scope.")
-
-    emit_progress(progress, "reranking_chunks", "Selecting the best evidence", {"chunks": len(results)})
-    emit_progress(progress, "generating_answer", "Generating the answer from selected evidence", {"chunks": len(results)})
-    structured_answer = answer_question_structured(question, results)
-    if not structured_answer_is_usable(structured_answer):
-        return unavailable_response(mode="insufficient_evidence", confidence=structured_answer.confidence)
-    return format_main_pipeline_response(structured_answer, results)
+    return answer_with_hybrid_pipeline(
+        question=question,
+        top_k=top_k,
+        doc_id=doc_id,
+        source_type=source_type,
+        progress=progress,
+    )
 
 
 def answer_with_fallback(
@@ -453,6 +491,8 @@ def answer_with_fallback(
         try:
             emit_progress(progress, "generating_answer", "Generating the answer from keyword evidence", {"chunks": len(sources)})
             structured_answer = answer_question_structured(question, sources)
+            emit_progress(progress, "validating_answer", "Validating the answer against selected evidence")
+            structured_answer, grounding = calibrate_answer(structured_answer, sources)
             return {
                 "heading": structured_answer.heading,
                 "answer": structured_answer.answer,
@@ -462,6 +502,7 @@ def answer_with_fallback(
                 "confidence_score": structured_answer.confidence_score,
                 "citations": [citation.model_dump() for citation in structured_answer.citations],
                 "missing_information": structured_answer.missing_information,
+                "grounding": grounding,
             } if structured_answer_is_usable(structured_answer) else unavailable_response(mode="insufficient_evidence", confidence=structured_answer.confidence)
         except Exception as structured_exc:
             logger.exception("Keyword answer generation failed: %s", structured_exc)
@@ -473,23 +514,63 @@ def answer_question(
     top_k: int = 4,
     doc_id: str | None = None,
     source_type: str | None = None,
+    cache_namespace: str = "shared",
+    trace_id: str = "",
     progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
-    key = cached_answer_key(question=question, top_k=top_k, doc_id=doc_id, source_type=source_type)
+    provider = llm_provider()
+    reset_model_usage()
+    trace = PipelineTrace(provider=provider, trace_id=trace_id)
+
+    def traced_progress(stage: str, message: str, metadata: dict[str, Any] | None = None) -> None:
+        trace.progress(stage=stage, message=message, metadata=metadata, downstream=progress)
+
+    key = cached_answer_key(
+        question=question,
+        top_k=top_k,
+        doc_id=doc_id,
+        source_type=source_type,
+        cache_namespace=cache_namespace,
+    )
     cached = _answer_cache.get(key)
     if cached is not None:
-        emit_progress(progress, "cache_hit", "Using cached answer", {"ttl_seconds": CACHE_TTL_SECONDS})
+        emit_progress(traced_progress, "cache_hit", "Using cached answer", {"ttl_seconds": CACHE_TTL_SECONDS})
+        cached["telemetry"] = trace.finish(
+            mode=str(cached.get("mode") or "unknown"),
+            source_count=len(cached.get("sources") or []),
+            model_usage=model_usage_snapshot(),
+        )
+        record_pipeline_metric(cached["telemetry"])
         return cached
 
+    error_type = ""
     try:
-        if llm_provider() == "databricks":
-            response = answer_with_databricks_pipeline(question=question, top_k=top_k, doc_id=doc_id, source_type=source_type, progress=progress)
-        else:
-            response = answer_with_main_pipeline(question=question, top_k=top_k, doc_id=doc_id, source_type=source_type, progress=progress)
+        response = answer_with_hybrid_pipeline(
+            question=question,
+            top_k=top_k,
+            doc_id=doc_id,
+            source_type=source_type,
+            progress=traced_progress,
+        )
     except Exception as exc:
+        error_type = type(exc).__name__
         logger.exception("Answer pipeline failed: %s", exc)
-        emit_progress(progress, "fallback_search", "Primary retrieval failed; using keyword search")
-        response = answer_with_fallback(question=question, top_k=top_k, doc_id=doc_id, source_type=source_type, error=exc, progress=progress)
+        emit_progress(traced_progress, "fallback_search", "Primary retrieval failed; using keyword search")
+        response = answer_with_fallback(
+            question=question,
+            top_k=top_k,
+            doc_id=doc_id,
+            source_type=source_type,
+            error=exc,
+            progress=traced_progress,
+        )
+    response["telemetry"] = trace.finish(
+        mode=str(response.get("mode") or "unknown"),
+        source_count=len(response.get("sources") or []),
+        error_type=error_type,
+        model_usage=model_usage_snapshot(),
+    )
+    record_pipeline_metric(response["telemetry"])
     _answer_cache.set(key, response)
     return response
 
@@ -501,33 +582,68 @@ def answer_with_databricks_pipeline(
     source_type: str | None = None,
     progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
-    emit_progress(progress, "creating_subquestions", "Creating focused retrieval questions")
-    sources = retrieve_hybrid_databricks_sources(
+    return answer_with_hybrid_pipeline(
         question=question,
-        top_k=RERANKED_CHUNKS_FOR_LLM,
+        top_k=top_k,
+        doc_id=doc_id,
+        source_type=source_type,
+        progress=progress,
+    )
+
+
+def answer_with_hybrid_pipeline(
+    question: str,
+    top_k: int = 4,
+    doc_id: str | None = None,
+    source_type: str | None = None,
+    progress: ProgressCallback | None = None,
+) -> dict[str, Any]:
+    emit_progress(progress, "creating_subquestions", "Creating focused retrieval questions")
+    sources = retrieve_hybrid_sources(
+        question=question,
+        top_k=max(top_k, context_max_chunks()),
         doc_id=doc_id,
         source_type=source_type,
         progress=progress,
     )
     if not sources:
         raise RuntimeError("No Databricks similarity results matched the selected source scope.")
-    emit_progress(progress, "generating_answer", "Generating the answer from selected evidence", {"chunks": len(sources)})
+    emit_progress(progress, "generating_answer", "Generating the answer from selected evidence", context_summary(sources))
     structured_answer = answer_question_structured(question, sources)
+    emit_progress(progress, "validating_answer", "Validating the answer against selected evidence")
+    structured_answer, grounding = calibrate_answer(structured_answer, sources)
     if not structured_answer_is_usable(structured_answer):
         return unavailable_response(mode="insufficient_evidence", confidence=structured_answer.confidence)
     return {
         "heading": structured_answer.heading,
         "answer": structured_answer.answer,
         "sources": sources,
-        "mode": "hybrid_lancedb_databricks",
+        "mode": f"hybrid_lancedb_{llm_provider()}",
         "confidence": structured_answer.confidence,
         "confidence_score": structured_answer.confidence_score,
         "citations": [citation.model_dump() for citation in structured_answer.citations],
         "missing_information": structured_answer.missing_information,
+        "grounding": grounding,
     }
 
 
 def retrieve_hybrid_databricks_sources(
+    question: str,
+    top_k: int = 4,
+    doc_id: str | None = None,
+    source_type: str | None = None,
+    progress: ProgressCallback | None = None,
+) -> list[dict[str, Any]]:
+    return retrieve_hybrid_sources(
+        question=question,
+        top_k=top_k,
+        doc_id=doc_id,
+        source_type=source_type,
+        progress=progress,
+    )
+
+
+def retrieve_hybrid_sources(
     question: str,
     top_k: int = 4,
     doc_id: str | None = None,
@@ -542,6 +658,7 @@ def retrieve_hybrid_databricks_sources(
         {"questions": sub_questions[: GENERATED_SIMILAR_QUERY_COUNT + 1]},
     )
     ranked: dict[str, tuple[float, dict[str, Any]]] = {}
+    semantic_search_available = True
 
     for query_index, sub_question in enumerate(sub_questions):
         query_weight = 1.0 if query_index == 0 else 0.85
@@ -555,7 +672,7 @@ def retrieve_hybrid_databricks_sources(
         for rank, source in enumerate(
             retrieve_bm25_chunks(
                 question=sub_question,
-                top_k=CANDIDATE_CHUNKS_PER_QUERY,
+                top_k=retrieval_candidate_k(),
                 doc_id=doc_id,
                 source_type=source_type,
             ),
@@ -564,46 +681,55 @@ def retrieve_hybrid_databricks_sources(
             add_ranked_source(
                 ranked=ranked,
                 source=source,
-                score=(95.0 / rank) * query_weight,
+                score=(query_weight / (RRF_K + rank)),
                 method="bm25",
                 sub_question=sub_question,
             )
 
         try:
+            if not semantic_search_available:
+                raise LookupError("semantic search disabled after an earlier provider failure")
             emit_progress(
                 progress,
                 "vector_search",
                 f"Running vector search for question {query_index + 1}",
                 {"query_index": query_index + 1, "total": len(sub_questions), "question": sub_question},
             )
-            vector_results = lancedb_retrieve(sub_question, top_k=CANDIDATE_CHUNKS_PER_QUERY)
+            vector_search_k = retrieval_candidate_k() * (4 if doc_id or source_type else 1)
+            vector_results = lancedb_retrieve(sub_question, top_k=vector_search_k)
         except Exception as exc:
-            logger.exception("Databricks vector retrieval failed; using BM25 retrieval only: %s", exc)
+            if semantic_search_available:
+                logger.warning("Semantic retrieval unavailable; continuing with lexical evidence: %s", type(exc).__name__)
+            semantic_search_available = False
             vector_results = []
 
-        vector_results = [
-            result
-            for result in vector_results
-            if databricks_embedding_endpoint().lower() in str(result.get("embedding_model") or "").lower()
-        ]
         if source_type:
             vector_results = [result for result in vector_results if (result.get("source_type") or "document") == source_type]
         if doc_id:
             vector_results = [result for result in vector_results if result.get("doc_id") == doc_id]
 
-        for rank, result in enumerate(vector_results[:CANDIDATE_CHUNKS_PER_QUERY], 1):
+        for rank, result in enumerate(vector_results[: retrieval_candidate_k()], 1):
             add_ranked_source(
                 ranked=ranked,
                 source=format_lancedb_source(result),
-                score=(80.0 / rank) * query_weight,
+                score=(query_weight / (RRF_K + rank)),
                 method="vector",
                 sub_question=sub_question,
             )
 
     emit_progress(progress, "deduplicating_chunks", "Merging duplicate chunks", {"candidates": len(ranked)})
     reranked = rerank_sources(question=question, ranked=ranked)
-    emit_progress(progress, "reranking_chunks", "Reranking evidence for the final prompt", {"chunks": min(len(reranked), top_k)})
-    return reranked[:top_k]
+    reranked = model_rerank(question, reranked, limit=retrieval_candidate_k())
+    emit_progress(progress, "reranking_chunks", "Reranking evidence for the final prompt", {"candidates": len(reranked)})
+    reranked = expand_adjacent_sources(reranked, load_chunks(), max_neighbors=1)
+    selected = select_context_sources(
+        reranked,
+        max_chunks=min(top_k, context_max_chunks()),
+        token_budget=context_token_budget(),
+        per_document_limit=max(top_k, context_max_chunks()) if doc_id else 3,
+    )
+    emit_progress(progress, "context_selection", "Selecting evidence for the final prompt", context_summary(selected))
+    return selected
 
 
 def emit_progress(progress: ProgressCallback | None, stage: str, message: str, metadata: dict[str, Any] | None = None) -> None:
@@ -644,7 +770,9 @@ def rerank_sources(question: str, ranked: dict[str, tuple[float, dict[str, Any]]
         text = searchable_text(source).lower()
         overlap = sum(1 for term in query_terms_set if term in text)
         title_bonus = 3.0 * sum(1 for term in query_terms_set if term in f"{source.get('title', '')} {source.get('section', '')}".lower())
-        score = retrieval_score + (overlap * 4.0) + title_bonus
+        # RRF establishes the cross-method rank; lexical overlap and source quality
+        # provide deterministic, provider-independent tie-breaking.
+        score = (retrieval_score * 1000.0) + (overlap * 4.0) + title_bonus
         if is_summary_question(question):
             score += 4.0
         if is_foundational_transformer_question(question):

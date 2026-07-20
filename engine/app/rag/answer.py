@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from copy import deepcopy
 from hashlib import sha256
@@ -14,6 +15,7 @@ from app.clients.databricks_model_serving import chat_completion
 from app.clients.document_intelligence import env_value, load_dotenv_file
 from app.config import databricks_chat_endpoint, llm_provider
 from app.rag.prompt_store import prompt_text
+from app.rag.usage import record_model_usage
 
 
 DEFAULT_ANSWER_MODEL = "gpt-4.1-mini"
@@ -23,6 +25,10 @@ INSUFFICIENT_EVIDENCE_MESSAGE = (
     "Can you specify the document, video, or topic?"
 )
 DEFAULT_CLARIFICATION_QUESTION = "Can you clarify which document, video, or topic you want me to focus on?"
+VAGUE_QUESTION_RE = re.compile(
+    r"^(tell me more|explain( it| that)?|what about (it|that|this)|why|how so|more details|summarize)$",
+    re.IGNORECASE,
+)
 
 
 class AnswerCitation(BaseModel):
@@ -208,7 +214,7 @@ def answer_question_structured(question: str, results: list[dict[str, Any]], mod
         return answer
 
     model = model or env_value("OPENAI_ANSWER_MODEL") or DEFAULT_ANSWER_MODEL
-    client = OpenAI(api_key=env_value("OPENAI_API_KEY", "OPANAI_API_KEY"))
+    client = OpenAI(api_key=env_value("OPENAI_API_KEY", "OPANAI_API_KEY"), max_retries=2, timeout=60)
     user_prompt = build_user_prompt(question, results)
     system_prompt = prompt_text("static", "rag_answer", "system")
     response = client.responses.create(
@@ -225,6 +231,15 @@ def answer_question_structured(question: str, results: list[dict[str, Any]], mod
                 "strict": True,
             }
         },
+    )
+    usage = getattr(response, "usage", None)
+    record_model_usage(
+        {
+            "input_tokens": getattr(usage, "input_tokens", 0),
+            "output_tokens": getattr(usage, "output_tokens", 0),
+            "total_tokens": getattr(usage, "total_tokens", 0),
+        },
+        model=model,
     )
     answer = parse_structured_answer(response.output_text)
     _llm_cache.set(key, answer.model_dump())
@@ -331,6 +346,28 @@ def normalize_question_preparation(plan: QuestionPreparation, fallback_question:
     return plan
 
 
+def deterministic_question_preparation(question: str) -> QuestionPreparation:
+    cleaned_question = " ".join(question.strip().split())
+    vague = len(cleaned_question) < 3 or bool(VAGUE_QUESTION_RE.fullmatch(cleaned_question.rstrip("?.!")))
+    if vague:
+        return QuestionPreparation(
+            status="needs_clarification",
+            rephrased_question=cleaned_question,
+            clarification_question=DEFAULT_CLARIFICATION_QUESTION,
+            issue="vague",
+            confidence_score=0.95,
+            reason="The question does not identify a subject without conversation context.",
+        )
+    return QuestionPreparation(
+        status="ready",
+        rephrased_question=cleaned_question,
+        clarification_question="",
+        issue="none",
+        confidence_score=0.7,
+        reason="Deterministic preparation preserved the user's explicit question.",
+    )
+
+
 def plan_conversation_question(question: str, history: list[dict[str, Any]], model: str | None = None) -> ConversationQuestionPlan:
     cleaned_question = " ".join(question.strip().split())
     if not history:
@@ -358,7 +395,7 @@ def plan_conversation_question(question: str, history: list[dict[str, Any]], mod
         )
         plan = parse_conversation_question_plan(content)
     else:
-        client = OpenAI(api_key=env_value("OPENAI_API_KEY", "OPANAI_API_KEY"))
+        client = OpenAI(api_key=env_value("OPENAI_API_KEY", "OPANAI_API_KEY"), max_retries=2, timeout=60)
         response = client.responses.create(
             model=model or env_value("OPENAI_ANSWER_MODEL") or DEFAULT_ANSWER_MODEL,
             input=[
@@ -386,15 +423,9 @@ def plan_conversation_question(question: str, history: list[dict[str, Any]], mod
 
 def prepare_retrieval_question(question: str, model: str | None = None) -> QuestionPreparation:
     cleaned_question = " ".join(question.strip().split())
-    if len(cleaned_question) < 3:
-        return QuestionPreparation(
-            status="needs_clarification",
-            rephrased_question=cleaned_question,
-            clarification_question=DEFAULT_CLARIFICATION_QUESTION,
-            issue="vague",
-            confidence_score=1.0,
-            reason="The question is too short to identify a retrieval intent.",
-        )
+    deterministic = deterministic_question_preparation(cleaned_question)
+    if deterministic.status == "needs_clarification":
+        return deterministic
 
     load_dotenv_file()
     key = cache_key("question_preparation", {"provider": llm_provider(), "model": model, "question": cleaned_question})
@@ -417,7 +448,7 @@ def prepare_retrieval_question(question: str, model: str | None = None) -> Quest
         )
         plan = parse_question_preparation(content)
     else:
-        client = OpenAI(api_key=env_value("OPENAI_API_KEY", "OPANAI_API_KEY"))
+        client = OpenAI(api_key=env_value("OPENAI_API_KEY", "OPANAI_API_KEY"), max_retries=2, timeout=60)
         response = client.responses.create(
             model=model or env_value("OPENAI_ANSWER_MODEL") or DEFAULT_ANSWER_MODEL,
             input=[
@@ -486,7 +517,7 @@ def generate_response_diagram(question: str, answer: str, results: list[dict[str
         )
         diagram = parse_response_diagram(content)
     else:
-        client = OpenAI(api_key=env_value("OPENAI_API_KEY", "OPANAI_API_KEY"))
+        client = OpenAI(api_key=env_value("OPENAI_API_KEY", "OPANAI_API_KEY"), max_retries=2, timeout=60)
         response = client.responses.create(
             model=model or env_value("OPENAI_ANSWER_MODEL") or DEFAULT_ANSWER_MODEL,
             input=[
@@ -540,7 +571,7 @@ def generate_follow_up_questions(question: str, answer: str, results: list[dict[
         _llm_cache.set(key, questions)
         return questions
 
-    client = OpenAI(api_key=env_value("OPENAI_API_KEY", "OPANAI_API_KEY"))
+    client = OpenAI(api_key=env_value("OPENAI_API_KEY", "OPANAI_API_KEY"), max_retries=2, timeout=60)
     response = client.responses.create(
         model=model or env_value("OPENAI_ANSWER_MODEL") or DEFAULT_ANSWER_MODEL,
         input=[
