@@ -92,6 +92,18 @@ def _email_set(env_name: str, default: set[str]) -> set[str]:
     return {item.strip().lower() for item in raw_value.split(",") if item.strip()}
 
 
+def local_dev_email() -> str:
+    """Optional override for the local-dev user's email (empty if unset)."""
+    load_dotenv_file()
+    return (env_value("LOCAL_DEV_EMAIL") or "").strip().lower()
+
+
+def local_dev_name() -> str:
+    """Optional override for the local-dev user's display name (empty if unset)."""
+    load_dotenv_file()
+    return (env_value("LOCAL_DEV_NAME") or "").strip()
+
+
 def app_api_keys() -> dict[str, dict[str, Any]]:
     load_dotenv_file()
     raw_value = env_value("APP_API_KEYS")
