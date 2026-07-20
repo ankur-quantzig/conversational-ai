@@ -164,6 +164,7 @@ jobs:
           python tests/quality_enrichment_smoke.py
           python tests/question_preparation_smoke.py
           python tests/video_source_resolution_smoke.py
+          python tests/prompt_catalog_smoke.py
           python tests/evaluation_telemetry_smoke.py
           python tests/production_engine_smoke.py
           python scripts/evaluate_security.py

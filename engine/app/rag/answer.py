@@ -185,7 +185,7 @@ def build_context(results: list[dict[str, Any]]) -> str:
 def build_user_prompt(question: str, results: list[dict[str, Any]]) -> str:
     context = build_context(results)
     schema = json.dumps(rag_answer_schema(), indent=2)
-    return prompt_text("dynamic", "rag_answer", "human", question=question, context=context, schema=schema)
+    return prompt_text("human", "rag_answer", question=question, context=context, schema=schema)
 
 
 def parse_structured_answer(text: str) -> RagAnswer:
@@ -216,7 +216,7 @@ def answer_question_structured(question: str, results: list[dict[str, Any]], mod
     model = model or env_value("OPENAI_ANSWER_MODEL") or DEFAULT_ANSWER_MODEL
     client = OpenAI(api_key=env_value("OPENAI_API_KEY", "OPANAI_API_KEY"), max_retries=2, timeout=60)
     user_prompt = build_user_prompt(question, results)
-    system_prompt = prompt_text("static", "rag_answer", "system")
+    system_prompt = prompt_text("system", "rag_answer")
     response = client.responses.create(
         model=model,
         input=[
@@ -248,7 +248,7 @@ def answer_question_structured(question: str, results: list[dict[str, Any]], mod
 
 def answer_question_structured_databricks(question: str, results: list[dict[str, Any]], endpoint: str) -> RagAnswer:
     user_prompt = build_user_prompt(question, results)
-    system_prompt = prompt_text("static", "rag_answer", "system")
+    system_prompt = prompt_text("system", "rag_answer")
     content = chat_completion(
         endpoint=endpoint,
         messages=[
@@ -268,7 +268,7 @@ def answer_question(question: str, results: list[dict[str, Any]], model: str | N
 def follow_up_prompt(question: str, answer: str, results: list[dict[str, Any]]) -> str:
     context = build_context(results[:4])
     schema = json.dumps(follow_up_schema(), indent=2)
-    return prompt_text("dynamic", "follow_up_questions", "human", question=question, answer=answer, context=context, schema=schema)
+    return prompt_text("human", "follow_up_questions", question=question, answer=answer, context=context, schema=schema)
 
 
 def parse_follow_up_questions(text: str) -> list[str]:
@@ -381,8 +381,8 @@ def plan_conversation_question(question: str, history: list[dict[str, Any]], mod
         return ConversationQuestionPlan.model_validate(cached)
 
     schema = json.dumps(conversation_question_schema(), indent=2)
-    user_prompt = prompt_text("dynamic", "conversation_question", "human", history=history_text, question=cleaned_question, schema=schema)
-    system_prompt = prompt_text("static", "conversation_question", "system")
+    user_prompt = prompt_text("human", "conversation_question", history=history_text, question=cleaned_question, schema=schema)
+    system_prompt = prompt_text("system", "conversation_question")
     if llm_provider() == "databricks":
         content = chat_completion(
             endpoint=model or databricks_chat_endpoint(),
@@ -434,8 +434,8 @@ def prepare_retrieval_question(question: str, model: str | None = None) -> Quest
         return QuestionPreparation.model_validate(cached)
 
     schema = json.dumps(question_preparation_schema(), indent=2)
-    user_prompt = prompt_text("dynamic", "question_preparation", "human", question=cleaned_question, schema=schema)
-    system_prompt = prompt_text("static", "question_preparation", "system")
+    user_prompt = prompt_text("human", "question_preparation", question=cleaned_question, schema=schema)
+    system_prompt = prompt_text("system", "question_preparation")
     if llm_provider() == "databricks":
         content = chat_completion(
             endpoint=model or databricks_chat_endpoint(),
@@ -503,8 +503,8 @@ def generate_response_diagram(question: str, answer: str, results: list[dict[str
         return ResponseDiagram.model_validate(cached)
 
     schema = json.dumps(response_diagram_schema(), indent=2)
-    user_prompt = prompt_text("dynamic", "response_diagram", "human", question=question, answer=answer, context=context, schema=schema)
-    system_prompt = prompt_text("static", "response_diagram", "system")
+    user_prompt = prompt_text("human", "response_diagram", question=question, answer=answer, context=context, schema=schema)
+    system_prompt = prompt_text("system", "response_diagram")
     if llm_provider() == "databricks":
         content = chat_completion(
             endpoint=model or databricks_chat_endpoint(),
@@ -556,7 +556,7 @@ def generate_follow_up_questions(question: str, answer: str, results: list[dict[
         return list(cached)
 
     prompt = follow_up_prompt(question=question, answer=answer, results=results)
-    system_prompt = prompt_text("static", "follow_up_questions", "system")
+    system_prompt = prompt_text("system", "follow_up_questions")
     if llm_provider() == "databricks":
         content = chat_completion(
             endpoint=model or databricks_chat_endpoint(),

@@ -172,7 +172,7 @@ USER_PROGRESS = {
     "fallback_search": ("finding_information", "Trying another way to find the answer"),
     "generating_answer": ("preparing_answer", "Preparing a clear answer"),
     "validating_answer": ("preparing_answer", "Checking the answer against the sources"),
-    "creating_followups": ("finishing_up", "Adding helpful next questions"),
+    "creating_followups": ("finishing_up", "Finishing your response"),
     "diagram_check": ("finishing_up", "Finishing your response"),
     "saving_conversation": ("finishing_up", "Finishing your response"),
     "complete": ("complete", "Your answer is ready"),

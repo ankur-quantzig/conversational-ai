@@ -382,9 +382,8 @@ def build_quality_prompt(
     config: QualityEnrichmentConfig,
 ) -> str:
     return prompt_text(
-        "dynamic",
-        "quality_enrichment",
         "human",
+        "quality_enrichment",
         source_metadata=dump_json(source_metadata(chunk)),
         glossary=glossary_text(config.glossary),
         heuristic=dump_json(heuristic.model_dump()),
@@ -402,7 +401,7 @@ def enrich_with_databricks(
     content = chat_completion(
         endpoint=config.resolved_model,
         messages=[
-            {"role": "system", "content": prompt_text("static", "quality_enrichment", "system")},
+            {"role": "system", "content": prompt_text("system", "quality_enrichment")},
             {"role": "user", "content": build_quality_prompt(chunk, raw_text, heuristic, config)},
         ],
         temperature=0.0,
@@ -421,7 +420,7 @@ def enrich_with_openai(
     response = client.responses.create(
         model=config.resolved_model,
         input=[
-            {"role": "system", "content": [{"type": "input_text", "text": prompt_text("static", "quality_enrichment", "system")}]},
+            {"role": "system", "content": [{"type": "input_text", "text": prompt_text("system", "quality_enrichment")}]},
             {"role": "user", "content": [{"type": "input_text", "text": build_quality_prompt(chunk, raw_text, heuristic, config)}]},
         ],
         text={
