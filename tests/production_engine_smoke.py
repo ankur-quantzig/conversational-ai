@@ -126,6 +126,7 @@ def main() -> None:
     original_vector = retrieval_module.lancedb_retrieve
     original_chunks = retrieval_module.load_chunks
     original_index_status = retrieval_module.vector_index_status
+    original_allowlist = retrieval_module.source_doc_allowlist
     try:
         retrieval_module.generate_similar_questions = lambda question: [question]
         retrieval_module.retrieve_bm25_chunks = lambda **kwargs: [
@@ -138,6 +139,7 @@ def main() -> None:
         ]
         retrieval_module.load_chunks = lambda: []
         retrieval_module.vector_index_status = lambda chunks: {"consistent": True}
+        retrieval_module.source_doc_allowlist = lambda: None
         stages = []
         hybrid = retrieval_module.retrieve_hybrid_sources(
             "What architecture and evaluation evidence is available?",
@@ -154,6 +156,7 @@ def main() -> None:
         retrieval_module.lancedb_retrieve = original_vector
         retrieval_module.load_chunks = original_chunks
         retrieval_module.vector_index_status = original_index_status
+        retrieval_module.source_doc_allowlist = original_allowlist
 
     gates = evaluate_release_gates({"hit_rate": 0.9, "mean_reciprocal_rank": 0.8, "expected_doc_recall": 0.8})
     assert gates["passed"] is True

@@ -43,6 +43,10 @@ const starterExamples = [
   'How should the solution connect video content with related documents?',
   'What Databricks architecture was proposed for SharePoint, Auto Loader, and the Bronze-Silver-Gold flow?',
 ]
+const projectSourceIds = new Set([
+  'conversational-ai-next-steps',
+  'conversational-ai-next-steps-20260702-173513-meeting-recording-1',
+])
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api'
 const APP_NAME = 'Shell Conversational AI'
@@ -1059,6 +1063,7 @@ export function App() {
   const localDocuments = useMemo(() => {
     const byDoc = new Map()
     chunks.forEach((chunk) => {
+      if (!projectSourceIds.has(chunk.doc_id)) return
       const doc = byDoc.get(chunk.doc_id) ?? {
         id: chunk.doc_id,
         title: chunk.title,

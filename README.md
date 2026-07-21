@@ -12,6 +12,10 @@ engine/  RAG retrieval, model clients, chunking, embeddings, and pipelines
 
 The Python folders are linked through the `app.*` namespace package. Run Python commands from the repo root so `sitecustomize.py` adds both `backend/` and `engine/` to the import path.
 
+## Project source scope
+
+The POC is intentionally scoped to the two indexed inputs: the Conversational AI meeting transcript and its recording. This keeps the user-facing source list and retrieval results focused on the validated project data. Set `RAG_SOURCE_DOC_IDS` to a comma-separated list to change the scope; set it to `*` (or `all`) only when all packaged sources should be enabled.
+
 ## Run the app locally
 
 Start the FastAPI backend:

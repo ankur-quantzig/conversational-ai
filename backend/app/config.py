@@ -22,6 +22,12 @@ DEFAULT_BASIC_USERS = {
     "vikasgoyal@quantzig.com",
     "saiprasad@quantzig.com",
 }
+DEFAULT_SOURCE_DOC_IDS = frozenset(
+    {
+        "conversational-ai-next-steps",
+        "conversational-ai-next-steps-20260702-173513-meeting-recording-1",
+    }
+)
 
 
 def app_env() -> str:
@@ -35,6 +41,18 @@ def is_local_env() -> bool:
 
 def is_databricks_env() -> bool:
     return app_env() in {"databricks", "dbx"}
+
+
+def source_doc_allowlist() -> frozenset[str] | None:
+    """Return permitted source IDs; ``*``/``all`` explicitly enables all sources."""
+    load_dotenv_file()
+    raw_value = (env_value("RAG_SOURCE_DOC_IDS") or "").strip()
+    if raw_value in {"*", "all"}:
+        return None
+    if raw_value == "":
+        return DEFAULT_SOURCE_DOC_IDS
+    values = frozenset(item.strip() for item in raw_value.split(",") if item.strip())
+    return values or DEFAULT_SOURCE_DOC_IDS
 
 
 def cors_origins() -> list[str]:

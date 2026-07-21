@@ -169,6 +169,7 @@ jobs:
           python tests/evaluation_telemetry_smoke.py
           python tests/production_engine_smoke.py
           python tests/readiness_smoke.py
+          python tests/source_scope_smoke.py
           python scripts/evaluate_security.py
 
   frontend:

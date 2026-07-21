@@ -24,6 +24,7 @@ from app.config import (
     grounded_answer_confidence_threshold,
     llm_provider,
     retrieval_candidate_k,
+    source_doc_allowlist,
 )
 from app.api.telemetry import PipelineTrace, record_pipeline_metric
 from app.rag.context import context_summary, expand_adjacent_sources, select_context_sources
@@ -181,12 +182,15 @@ def title_from_doc_id(doc_id: str) -> str:
 def load_chunks() -> list[dict[str, Any]]:
     chunks: list[dict[str, Any]] = []
     chunks_dir = output_dir("chunks")
+    allowed_ids = source_doc_allowlist()
     for path in sorted(chunks_dir.glob("*-chunks.jsonl")):
         with path.open("r", encoding="utf-8") as handle:
             for line in handle:
                 if not line.strip():
                     continue
                 chunk = json.loads(line)
+                if allowed_ids is not None and chunk.get("doc_id") not in allowed_ids:
+                    continue
                 chunk["title"] = title_from_doc_id(chunk.get("doc_id", ""))
                 chunk["file_path"] = str(path)
                 chunks.append(chunk)
@@ -716,6 +720,9 @@ def retrieve_hybrid_sources(
             vector_results = [result for result in vector_results if (result.get("source_type") or "document") == source_type]
         if doc_id:
             vector_results = [result for result in vector_results if result.get("doc_id") == doc_id]
+        allowed_ids = source_doc_allowlist()
+        if allowed_ids is not None:
+            vector_results = [result for result in vector_results if result.get("doc_id") in allowed_ids]
 
         for rank, result in enumerate(vector_results[: retrieval_candidate_k()], 1):
             add_ranked_source(

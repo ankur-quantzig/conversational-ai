@@ -51,6 +51,8 @@ env:
     value: sqlite:///output/chat_history.sqlite3
   - name: GUARDRAIL_CONFIDENCE_THRESHOLD
     value: "0.9"
+  - name: RAG_SOURCE_DOC_IDS
+    value: "conversational-ai-next-steps,conversational-ai-next-steps-20260702-173513-meeting-recording-1"
   - name: GROUNDED_ANSWER_CONFIDENCE_THRESHOLD
     value: "0.65"
   - name: DATABRICKS_TOKEN

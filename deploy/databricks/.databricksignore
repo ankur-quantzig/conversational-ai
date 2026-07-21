@@ -19,3 +19,6 @@ __pycache__/
 deploy/databricks/artifacts/.databricks/
 .idea/
 .vscode/
+*.docx
+docs/generated_*.png
+RAG_Engine_2_Week_Production_Plan.xlsx
